@@ -303,7 +303,7 @@ async def startup_event():
         data_dir = current_dir / "data"
         index_path = data_dir / "gost.index"
         meta_path = data_dir / "gost_rules_meta.pkl"
-        api_key = "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"
+        api_key = "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"
 
         if not api_key:
             logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: OPENROUTER_API_KEY не установлена!")
