@@ -100,7 +100,7 @@ class LLMAnalyzer:
             api_key=self.api_key,
             base_url=base_url
         )
-        self.model = "nvidia/nemotron-3-super-120b-a12b:free"
+        self.model = "deepseek/deepseek-v3.2"
 
         # Категории правил, относящиеся к заголовкам
         self.header_rule_ids = {
