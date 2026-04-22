@@ -92,7 +92,7 @@ class LLMAnalyzer:
     """Класс для анализа чанков с помощью LLM DeepSeek через OpenRouter."""
 
     def __init__(self, api_key: Optional[str] = None, base_url: str = "https://openrouter.ai/api/v1"):
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self.api_key = "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"
         if not self.api_key:
             raise ValueError("API ключ не предоставлен. Установите OPENROUTER_API_KEY.")
 
