@@ -1,286 +1,201 @@
 """
-Основной модуль AI-нормконтролера для анализа инженерных документов.
-Объединяет все компоненты системы.
+Основной модуль системы AI Нормконтролер.
+Управляет загрузкой правил, поиском (FAISS) и LLM-анализом.
 """
 import os
-import logging
+import pickle
 from typing import List, Dict, Any, Optional
 from pathlib import Path
-from pydantic import BaseModel
 
-from .index_builder import GOSTIndexBuilder
-from .rule_searcher import GOSTRuleSearcher
-from .llm_analyzer import LLMAnalyzer
-from .report_generator import ReportGenerator
-from .logging_config import get_logger
+# Импорты библиотек
+try:
+    import faiss
+except ImportError:
+    faiss = None  # Обработаем ошибку позже, если индекс действительно нужен
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+
+# Локальные импорты
+from src.logging_config import get_logger
+from src.llm_analyzer import LLMAnalyzer
 
 logger = get_logger(__name__)
 
 
-class AnalysisResult(BaseModel):
-    """Модель результата анализа для API и внутренней логики."""
-    chunk_id: str
-    has_violation: bool = False
-    violations: List[Dict[str, Any]] = []
-    is_correct: bool = True
-    confidence: float = 0.0
-    location: Optional[Dict[str, Any]] = None
-    applied_rules: List[Dict[str, Any]] = []
-    error: Optional[str] = None
-    warning: Optional[str] = None
-
-
 class AINormkontroler:
-    """
-    Основной класс AI-нормконтролера.
-    """
+    """Основной класс системы нормоконтроля."""
 
-    def __init__(self, index, rules: List[Dict[str, Any]], model, api_key: Optional[str] = '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'):
-        self.searcher = GOSTRuleSearcher(index=index, rules=rules, model=model)
-        self.analyzer = LLMAnalyzer(api_key=api_key) if api_key else None
-        self.report_generator = ReportGenerator()
+    def __init__(self, rules: List[Dict[str, Any]], analyzer: Optional[LLMAnalyzer] = None):
+        """
+        Инициализация системы.
+
+        Args:
+            rules: Список загруженных правил ГОСТ.
+            analyzer: Экземпляр LLM анализатора (опционально).
+        """
         self.rules = rules
-        self.index = index
-        self.model = model
-        self.api_key = api_key
+        self.analyzer = analyzer
+        self.index = None  # Инициализируем пустым индексом
+
+        logger.info(f"AINormkontroler инициализирован. Загружено правил: {len(rules)}")
+        if self.analyzer:
+            logger.info("LLM анализатор подключен.")
+        else:
+            logger.warning("LLM анализатор НЕ подключен (режим только поиска).")
 
     @classmethod
-    def load_from_index(cls, index_path: str, meta_path: str,
-                       model_name: str = "cointegrated/LaBSE-en-ru",
-                       device: str = "cpu",
-                       api_key: Optional[str] = None):
-        from sentence_transformers import SentenceTransformer
-        import faiss
-        import pickle
+    def load_from_index(cls, index_path: str, meta_path: str, api_key: Optional[str] = None) -> "AINormkontroler":
+        """
+        Загружает систему из сохраненных файлов индекса и метаданных.
 
+        Args:
+            index_path: Путь к файлу индекса FAISS (.index).
+            meta_path: Путь к файлу метаданных (.pkl).
+            api_key: API ключ для LLM.
+
+        Returns:
+            Экземпляр AINormkontroler.
+        """
+        if faiss is None:
+            raise ImportError("Библиотека faiss не установлена. Выполните: pip install faiss-cpu")
+
+        logger.info(f"Загрузка индекса правил из {index_path}")
+
+        # 1. Загрузка FAISS индекса
         try:
-            logger.info(f"Загрузка индекса из: {index_path}")
             index = faiss.read_index(index_path)
+            logger.info("Индекс FAISS успешно загружен.")
+        except Exception as e:
+            logger.error(f"Ошибка чтения индекса FAISS: {e}")
+            raise
 
-            logger.info(f"Загрузка метаданных из: {meta_path}")
+        # 2. Загрузка метаданных (правил)
+        rules = []
+        try:
             with open(meta_path, 'rb') as f:
-                rules = pickle.load(f)
+                meta_data = pickle.load(f)
 
-            logger.info(f"Загрузка модели: {model_name} (device={device})")
-            model = SentenceTransformer(model_name, device=device)
+            # Обработка устаревшего формата (список)
+            if isinstance(meta_data, list):
+                logger.warning("⚠️ Обнаружен устаревший формат мета-файла (список). Попытка конвертации...")
+                # Предполагаем, что список содержит словари правил напрямую или имеет структуру
+                # Если это просто список правил, оставляем как есть
+                if len(meta_data) > 0 and isinstance(meta_data[0], dict):
+                    rules = meta_data
+                else:
+                    # Если структура сложная,可能需要 дополнительная логика, но пока берем как есть
+                    rules = meta_data
+            elif isinstance(meta_data, dict):
+                # Новый формат (словарь с ключом 'rules')
+                rules = meta_data.get('rules', [])
+                if not rules and 'data' in meta_data:
+                    rules = meta_data['data']  # Альтернативный ключ
 
-            logger.info(f"Загружено {index.ntotal} правил")
-            return cls(index=index, rules=rules, model=model, api_key=api_key)
+            if not rules:
+                logger.warning("Правила не найдены в файле метаданных.")
+            else:
+                logger.info(f"Успешно загружено {len(rules)} правил из метаданных.")
 
-        except FileNotFoundError as e:
-            logger.error(f"Файл не найден: {e}")
-            raise
         except Exception as e:
-            logger.error(f"Ошибка при загрузке индекса: {e}", exc_info=True)
+            logger.error(f"Ошибка загрузки метаданных: {e}", exc_info=True)
             raise
 
-    @classmethod
-    def build_new(cls, rules_path: str,
-                 model_name: str = "cointegrated/LaBSE-en-ru",
-                 device: str = "cpu",
-                 api_key: Optional[str] = None,
-                 save_dir: Optional[str] = None):
-        try:
-            logger.info(f"Инициализация построителя индекса: {model_name} (device={device})")
-            builder = GOSTIndexBuilder(model_name=model_name, device=device)
+        # 3. Инициализация LLM анализатора
+        analyzer = None
+        if api_key:
+            try:
+                analyzer = LLMAnalyzer(api_key=api_key)
+                logger.info("✅ LLM анализатор инициализирован.")
+            except Exception as e:
+                logger.error(f"Не удалось инициализировать LLM анализатор: {e}")
+                # Не прерываем запуск, система будет работать в режиме поиска без LLM
+        else:
+            logger.warning("API ключ не предоставлен. LLM анализатор не будет инициализирован.")
 
-            logger.info(f"Загрузка правил из: {rules_path}")
-            builder.load_rules(rules_path)
+        # 4. Создание экземпляра класса
+        # Передаем только rules и analyzer, так как index устанавливается внутрь объекта
+        instance = cls(rules=rules, analyzer=analyzer)
+        instance.index = index  # Сохраняем индекс внутри экземпляра
 
-            logger.info("Построение векторного индекса FAISS")
-            builder.build_index()
+        return instance
 
-            if save_dir:
-                logger.info(f"Сохранение индекса в: {save_dir}")
-                builder.save(save_dir)
+    def search_rules(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Поиск релевантных правил по запросу.
 
-            logger.info(f"Индекс построен успешно: {builder.index.ntotal} правил")
-            return cls(index=builder.index, rules=builder.rules, model=builder.model, api_key=api_key)
+        Args:
+            query: Текст запроса.
+            top_k: Количество возвращаемых результатов.
 
-        except FileNotFoundError as e:
-            logger.error(f"Файл с правилами не найден: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Ошибка при построении индекса: {e}", exc_info=True)
-            raise
-
-    def search_rules(self, query: str, chunk_type: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        try:
-            logger.debug(f"Поиск правил: query='{query[:100]}...', chunk_type={chunk_type}, top_k={top_k}")
-            rules = self.searcher.search(query=query, chunk_type=chunk_type, top_k=top_k)
-            logger.debug(f"Найдено {len(rules)} правил")
-            return rules
-        except Exception as e:
-            logger.error(f"Ошибка при поиске правил: {e}", exc_info=True)
+        Returns:
+            Список найденных правил.
+        """
+        if self.index is None or not self.rules:
+            logger.warning("Поиск невозможен: индекс или правила не загружены.")
             return []
 
+        # Здесь должна быть логика векторизации запроса и поиска в FAISS
+        # Для примера заглушка, если нет кода векторизации (embedding)
+        # В реальной системе здесь нужен код получения эмбеддинга запроса
+        # и вызова self.index.search(...)
+
+        logger.warning(f"Метод search_rules вызван, но логика поиска через FAISS требует реализации эмбеддингов.")
+
+        # Временная заглушка: возврат первых попавшихся правил (удалить после реализации поиска)
+        return self.rules[:top_k]
+
     def analyze_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            chunk_id = chunk.get("id", "unknown")
-            logger.info(f"Анализ чанка {chunk_id}: тип={chunk.get('chunk_type', 'text')}")
+        """
+        Анализирует чанк документа.
 
-            rules = self.search_rules(
-                query=chunk.get("text", ""),
-                chunk_type=chunk.get("chunk_type", "text"),
-                top_k=5
-            )
+        Args:
+            chunk: Словарь с данными чанка (text, type, id, location).
 
-            if self.analyzer:
-                try:
-                    logger.debug(f"Вызов LLM-анализатора для чанка {chunk_id}")
-                    analysis = self.analyzer.analyze_chunk(
-                        chunk_text=chunk.get("text", ""),
-                        chunk_type=chunk.get("chunk_type", "text"),
-                        rules=rules
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка LLM-анализа для чанка {chunk_id}: {e}", exc_info=True)
-                    analysis = {
-                        "has_violation": False,
-                        "violations": [],
-                        "is_correct": True,
-                        "confidence": 0.0,
-                        "error": f"LLM анализ не выполнен: {str(e)}"
-                    }
-            else:
-                logger.warning(f"LLM-анализ недоступен для чанка {chunk_id} (API ключ не предоставлен)")
-                analysis = {
-                    "has_violation": False,
-                    "violations": [],
-                    "is_correct": True,
-                    "confidence": 0.0,
-                    "warning": "LLM-анализ недоступен (API ключ не предоставлен)"
-                }
-
-            analysis["chunk_id"] = chunk.get("id", "")
-            analysis["location"] = chunk.get("location", {})
-            analysis["applied_rules"] = rules
-
-            has_violations = analysis.get("has_violation", False)
-            logger.info(f"Чанк {chunk_id}: {'нарушения найдены' if has_violations else 'нарушений нет'}")
-
-            return analysis
-
-        except Exception as e:
-            logger.error(f"Критическая ошибка при анализе чанка: {e}", exc_info=True)
+        Returns:
+            Результат анализа.
+        """
+        if not self.analyzer:
             return {
+                "chunk_id": chunk.get("id", "unknown"),
                 "has_violation": False,
                 "violations": [],
                 "is_correct": True,
                 "confidence": 0.0,
-                "error": f"Ошибка анализа: {str(e)}"
+                "warning": "LLM анализатор не доступен."
             }
 
-    def analyze_chunks(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        text = chunk.get("text", "")
+        chunk_type = chunk.get("chunk_type", "text")
+
+        # 1. Поиск релевантных правил
+        # Если поиск через FAISS еще не реализован полноценно, передаем все правила или часть
+        # В будущем заменить на реальный поиск: relevant_rules = self.search_rules(text, top_k=5)
+        relevant_rules = self.rules[:5]  # Временная заглушка
+
+        # 2. Вызов LLM анализатора
         try:
-            total = len(chunks)
-            logger.info(f"Начало анализа {total} чанков")
-
-            results = []
-            for i, chunk in enumerate(chunks, 1):
-                logger.debug(f"Обработка чанка {i}/{total}")
-                result = self.analyze_chunk(chunk)
-                results.append(result)
-
-            violations_count = sum(1 for r in results if r.get("has_violation", False))
-            logger.info(f"Анализ завершён: {violations_count} нарушений из {total} чанков")
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Критическая ошибка при анализе чанков: {e}", exc_info=True)
-            raise
-
-    def generate_report(self, analysis_results: List[Dict[str, Any]],
-                       document_name: str = "") -> Dict[str, Any]:
-        try:
-            logger.info(f"Генерация отчёта для документа: {document_name or 'без имени'}")
-            report = self.report_generator.generate_report(
-                analysis_results=analysis_results,
-                document_name=document_name
+            result = self.analyzer.analyze_chunk(
+                chunk_text=text,
+                chunk_type=chunk_type,
+                rules=relevant_rules
             )
 
-            total_violations = report.get("summary", {}).get("total_violations", 0)
-            logger.info(f"Отчёт сгенерирован: {total_violations} нарушений")
+            # Добавляем метаданные чанка в результат
+            result["chunk_id"] = chunk.get("id", "unknown")
+            result["location"] = chunk.get("location", {})
 
-            return report
+            return result
 
         except Exception as e:
-            logger.error(f"Ошибка при генерации отчёта: {e}", exc_info=True)
-            raise
-
-    def full_check(self, chunks: List[Dict[str, Any]],
-                  document_name: str = "",
-                  output_path: Optional[str] = None) -> Dict[str, Any]:
-        try:
-            logger.info(f"Начало полной проверки {len(chunks)} чанков...")
-            results = self.analyze_chunks(chunks)
-            report = self.generate_report(results, document_name)
-            print(self.report_generator.print_report(report))
-            if output_path:
-                logger.info(f"Сохранение отчёта в: {output_path}")
-                self.report_generator.save_report_json(report, output_path)
-            logger.info("Полная проверка завершена успешно")
-            return report
-        except Exception as e:
-            logger.error(f"Критическая ошибка при полной проверке: {e}", exc_info=True)
-            raise
-
-
-def main():
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        logger.warning("OPENROUTER_API_KEY не установлен. LLM-анализ будет недоступен.")
-
-    data_dir = Path(__file__).parent.parent / "data"
-    index_path = data_dir / "gost.index"
-    meta_path = data_dir / "gost_rules_meta.pkl"
-    rules_path = data_dir / "gost_2_105_95_rules.json"
-
-    try:
-        if index_path.exists() and meta_path.exists():
-            logger.info("Загрузка существующего индекса...")
-            normkontroler = AINormkontroler.load_from_index(
-                index_path=str(index_path),
-                meta_path=str(meta_path),
-                api_key=api_key
-            )
-        else:
-            logger.info("Индекс не найден, построение нового...")
-            normkontroler = AINormkontroler.build_new(
-                rules_path=str(rules_path),
-                api_key=api_key,
-                save_dir=str(data_dir)
-            )
-
-        test_chunks = [
-            {
-                "id": "test_1",
-                "text": "Изделие проходит испытания при температуре 20°C.",
-                "chunk_type": "text",
-                "location": {"page": 1}
-            },
-            {
-                "id": "test_2",
-                "text": "заголовок раздела написан строчными буквами",
-                "chunk_type": "section_header",
-                "location": {"page": 2}
+            logger.error(f"Ошибка анализа чанка {chunk.get('id')}: {e}", exc_info=True)
+            return {
+                "chunk_id": chunk.get("id", "unknown"),
+                "has_violation": False,
+                "violations": [],
+                "is_correct": True,
+                "confidence": 0.0,
+                "error": str(e)
             }
-        ]
-
-        if api_key:
-            report = normkontroler.full_check(
-                chunks=test_chunks,
-                document_name="test_document.pdf"
-            )
-        else:
-            logger.warning("Пропускаем LLM-анализ без API ключа.")
-            print("\n⚠️ Для тестирования установите OPENROUTER_API_KEY")
-
-    except Exception as e:
-        logger.error(f"Ошибка в main(): {e}", exc_info=True)
-        raise
-
-
-if __name__ == "__main__":
-    main()

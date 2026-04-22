@@ -35,9 +35,9 @@ logs/
 *.log
 
 # Data files (generated)
-data/*.index
-data/*.pkl
-data/*.faiss
+#data/*.index
+#data/*.pkl
+#data/*.faiss
 
 # OS
 .DS_Store

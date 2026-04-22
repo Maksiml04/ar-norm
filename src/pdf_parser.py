@@ -1,21 +1,19 @@
 """
-Улучшенный PDF Parser на основе pdfplumber для AI-нормконтролера.
-Обеспечивает качественное извлечение текста с сохранением структуры документа.
-Поддерживает умное разбиение на чанки с учетом семантики (заголовки, рисунки, таблицы).
+Улучшенный PDF Parser (Версия 2.2).
+Исправления: надежное определение типов страниц и чанков, детальное логирование.
 """
 import re
 import json
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 from pathlib import Path
+from collections import Counter
 
 try:
     import pdfplumber
 except ImportError:
-    pdfplumber = None
     raise ImportError("Установите pdfplumber: pip install pdfplumber")
 
-# Используем абсолютный импорт для совместимости
 try:
     from src.logging_config import get_logger
 except ImportError:
@@ -23,10 +21,8 @@ except ImportError:
 
 logger = get_logger(__name__)
 
-
 @dataclass
 class DocumentChunk:
-    """Структура чанка документа с метаданными"""
     chunk_id: str
     chunk_type: str
     text: str
@@ -35,7 +31,6 @@ class DocumentChunk:
     context_query: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        """Конвертирует чанк в словарь для совместимости с анализатором"""
         return {
             "id": self.chunk_id,
             "text": self.text,
@@ -45,311 +40,210 @@ class DocumentChunk:
             "context_query": self.context_query
         }
 
-
 class PDFChunker:
-    """
-    Умный чанкер PDF документов на основе pdfplumber.
-
-    Особенности:
-    - Качественное извлечение текста с сохранением структуры
-    - Очистка артефактов (разорванные слова, лишние пробелы)
-    - Семантическое разбиение на чанки (титульник, содержание, разделы, рисунки, таблицы)
-    - Добавление метаданных для каждого чанка
-    """
-
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
-        """
-        Инициализация чанкера.
-
-        Args:
-            chunk_size: Размер чанка в символах
-            chunk_overlap: Перекрытие между чанками
-        """
-        if pdfplumber is None:
-            raise ImportError("Библиотека pdfplumber не установлена")
-
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-
-        # Контекстные запросы для разных типов чанков
         self.context_queries = {
-            "title_page": "оформление титульного листа отчета ГОСТ 7.32 основная надпись форма 2а",
-            "toc": "оформление содержания оглавление нумерация страниц ГОСТ 7.32",
-            "section_header": "нумерация разделов подразделов заголовки оформление ГОСТ 2.105",
-            "text": "абзацный отступ шрифт размер интервалы перечисления формулы ГОСТ 2.105",
-            "table_ref": "оформление таблиц нумерация заголовки граф ссылки на таблицы ГОСТ 2.105",
-            "figure_ref": "оформление рисунков подписи нумерация ссылки на рисунки ГОСТ 2.105",
-            "bibliography": "оформление списка литературы библиографическое описание ГОСТ 7.32 ГОСТ Р 7.0.5"
+            "title_page": "титульный лист отчет практика ГОСТ 7.32",
+            "toc": "содержание оглавление номера страниц ГОСТ 7.32",
+            "section_header": "заголовок раздела подраздела номер ГОСТ 2.105",
+            "text": "текст абзац опечатки пробелы переносы ГОСТ 2.105",
+            "figure_ref": "рисунок подпись номер ГОСТ 2.105",
+            "table_ref": "таблица заголовок номер ГОСТ 2.105",
+            "bibliography": "список литературы источники ГОСТ 7.32"
         }
-
-        logger.info(f"PDFChunker инициализирован (chunk_size={chunk_size}, overlap={chunk_overlap})")
+        logger.info(f"PDFChunker initialized")
 
     def chunk_pdf(self, pdf_path: str) -> List[DocumentChunk]:
-        """
-        Загружает PDF файл и разбивает на чанки.
-
-        Args:
-            pdf_path: Путь к PDF файлу
-
-        Returns:
-            Список чанков DocumentChunk
-        """
         path = Path(pdf_path)
         if not path.exists():
             raise FileNotFoundError(f"Файл не найден: {pdf_path}")
 
-        logger.info(f"Начало обработки PDF: {path.name}")
+        logger.info(f"📄 Обработка PDF: {path.name}")
         chunks = []
         chunk_id = 0
 
-        try:
-            with pdfplumber.open(str(path)) as pdf:
-                logger.info(f"Открыт PDF: {len(pdf.pages)} страниц")
+        with pdfplumber.open(str(path)) as pdf:
+            logger.info(f"Открыт PDF: {len(pdf.pages)} страниц")
 
-                for page_num, page in enumerate(pdf.pages, 1):
-                    # Извлекаем текст с максимальной точностью
-                    page_text = page.extract_text()
+            for page_num, page in enumerate(pdf.pages, 1):
+                raw_text = page.extract_text()
+                if not raw_text or not raw_text.strip():
+                    continue
 
-                    if not page_text or not page_text.strip():
-                        logger.debug(f"Страница {page_num} пустая, пропускаем")
-                        continue
+                # Очистка текста (минимальная, чтобы не ломать структуру)
+                cleaned_text = self._clean_text(raw_text)
+                lines = [l.strip() for l in cleaned_text.split('\n') if l.strip()]
 
-                    # Очищаем текст от артефактов
-                    cleaned_text = self._clean_text(page_text)
+                # 1. Определяем тип страницы
+                page_type = self._detect_page_type(cleaned_text, lines, page_num)
+                logger.debug(f"Стр. {page_num}: тип страницы = {page_type}")
 
-                    # Обрабатываем страницу
-                    page_chunks = self._process_page(cleaned_text, page_num, chunk_id)
+                if page_type == "title_page":
+                    chunk = self._make_chunk("title_page", cleaned_text, page_num, chunk_id)
+                    chunks.append(chunk)
+                    chunk_id += 1
+                
+                elif page_type == "toc":
+                    chunk = self._make_chunk("toc", cleaned_text, page_num, chunk_id)
+                    chunks.append(chunk)
+                    chunk_id += 1
+
+                elif page_type == "bibliography":
+                    chunk = self._make_chunk("bibliography", cleaned_text, page_num, chunk_id)
+                    chunks.append(chunk)
+                    chunk_id += 1
+                
+                else:
+                    # Обычная страница: разбиваем на блоки
+                    page_chunks = self._split_content_page(lines, page_num, chunk_id)
                     chunks.extend(page_chunks)
                     chunk_id += len(page_chunks)
 
-                logger.info(f"Из PDF '{path.name}' извлечено {len(chunks)} чанков")
-                return chunks
-
-        except Exception as e:
-            logger.error(f"Ошибка при чтении PDF {path.name}: {e}", exc_info=True)
-            raise
+        # Статистика
+        stats = Counter(c.chunk_type for c in chunks)
+        logger.info(f"✅ Готово. Всего чанков: {len(chunks)}. Распределение: {dict(stats)}")
+        return chunks
 
     def _clean_text(self, text: str) -> str:
-        """
-        Очищает текст от артефактов извлечения PDF.
-
-        Args:
-            text: Исходный текст
-
-        Returns:
-            Очищенный текст
-        """
-        # Удаляем лишние пробелы внутри слов (частая проблема PDF)
-        text = re.sub(r'(\w)\s+(\w)', r'\1\2', text)
-
-        # Исправляем разорванные переносом строки слова (если слово разорвано в конце строки)
-        text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
-
-        # Заменяем множественные пробелы на один
-        text = re.sub(r'\s{2,}', ' ', text)
-
-        # Удаляем пробелы перед знаками препинания
+        # 1. Убираем лишние пробелы между буквами внутри слов (артефакт PDF)
+        # Эвристика: если между двумя кириллическими буквами один пробел, склеиваем.
+        # Но осторожно, чтобы не склеить слова.
+        # Более безопасный вариант: склеиваем, если слово разорвано явно странно (например, "бла годаря")
+        # Пока оставим простую нормализацию множественных пробелов.
+        text = re.sub(r'\s{2,}', ' ', text) # Множественные пробелы -> один
+        
+        # Убираем пробелы перед точками/запятыми
         text = re.sub(r'\s+([.,;:!?])', r'\1', text)
-
-        # Нормализуем переносы строк
-        text = re.sub(r'\n\s*\n', '\n\n', text)
-
+        
+        # Склеиваем разорванные переносом строки слова (дефис в конце строки)
+        text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+        
         return text.strip()
 
-    def _process_page(self, page_text: str, page_num: int, start_id: int) -> List[DocumentChunk]:
-        """
-        Обрабатывает одну страницу и разбивает на чанки.
+    def _detect_page_type(self, text: str, lines: List[str], page_num: int) -> str:
+        text_lower = text.lower()
 
-        Args:
-            page_text: Текст страницы
-            page_num: Номер страницы
-            start_id: Начальный ID чанка
+        # Титульник (обычно стр 1, есть ключевые слова)
+        if page_num <= 2:
+            if ('отчет по' in text_lower and 'практике' in text_lower) or \
+               ('факультет' in text_lower and 'кафедра' in text_lower):
+                return "title_page"
 
-        Returns:
-            Список чанков
-        """
-        lines = [line.strip() for line in page_text.split('\n') if line.strip()]
-        if not lines:
-            return []
-
-        # Определяем тип страницы
-        page_type = self._detect_page_type(page_text, lines)
-
-        # Титульная страница, содержание и библиография обрабатываются целиком
-        if page_type in ["title_page", "toc", "bibliography"]:
-            chunk = self._make_chunk(
-                chunk_type=page_type,
-                text=page_text,
-                page=page_num,
-                chunk_id=start_id
-            )
-            return [chunk]
-
-        # Обычная страница с содержанием - разбиваем на логические блоки
-        return self._split_content_page(lines, page_num, start_id)
-
-    def _detect_page_type(self, page_text: str, lines: List[str]) -> str:
-        """
-        Определяет тип страницы по содержимому.
-
-        Args:
-            page_text: Полный текст страницы
-            lines: Список строк
-
-        Returns:
-            Тип страницы
-        """
-        text_lower = page_text.lower()
-
-        # Титульный лист
-        if ('отчет по производственной практике' in text_lower or
-            'отчет по учебной практике' in text_lower) and 'факультет' in text_lower:
-            return "title_page"
-
-        # Содержание
-        if 'содержание' in text_lower and any(re.search(r'\.+\s*\d+', line) for line in lines):
+        # Содержание (много точек и номеров страниц)
+        # Ищем строки вида: "Название ........... 12"
+        toc_lines = 0
+        for line in lines:
+            if re.search(r'\.{5,}\s*\d+\s*$', line):
+                toc_lines += 1
+        
+        if toc_lines >= 3: # Если хотя бы 3 строки с точками и номерами
             return "toc"
 
         # Библиография
-        if ('список использованных источников' in text_lower or
-            'литература' in text_lower or
-            'библиографический список' in text_lower):
+        if 'список использованных источников' in text_lower or \
+           'список литературы' in text_lower:
             return "bibliography"
 
         return "content"
 
     def _split_content_page(self, lines: List[str], page_num: int, start_id: int) -> List[DocumentChunk]:
-        """
-        Разбивает страницу с содержанием на логические блоки.
-
-        Args:
-            lines: Список строк
-            page_num: Номер страницы
-            start_id: Начальный ID чанка
-
-        Returns:
-            Список чанков
-        """
         chunks = []
         current_block = []
         chunk_id = start_id
 
+        # Паттерны
+        # Заголовок с номером: "1.2 Название"
+        re_section = re.compile(r'^(\d+(?:\.\d+)*)\s+(.+)$')
+        # Рисунок: "Рисунок 1 – ..."
+        re_figure = re.compile(r'^[Рр](исунок|ис\.?)?\s*\d+', re.IGNORECASE)
+        # Таблица: "Таблица 1 – ..."
+        re_table = re.compile(r'^[Тт](аблица|аб\.?)?\s*\d+', re.IGNORECASE)
+        # Заголовок без номера (Введение, Заключение) - если строка короткая и одна из известных
+        re_standalone = re.compile(r'^(Введение|Заключение|Приложение)\s*$', re.IGNORECASE)
+
         for line in lines:
-            # Пропускаем номера страниц
-            if re.match(r'^\s*\d+\s*$', line):
+            # Пропуск номеров страниц
+            if re.match(r'^\d{1,3}$', line.strip()):
                 continue
 
-            # Рисунок
-            if re.match(r'^[Рр](исунок|ис\.?)?\s*\d+', line):
+            is_header = False
+            
+            # Проверка на рисунок
+            if re_figure.match(line):
+                is_header = True
                 if current_block:
                     chunks.append(self._make_text_chunk('\n'.join(current_block), page_num, chunk_id))
                     chunk_id += 1
                     current_block = []
+                chunks.append(self._make_chunk("figure_ref", line, page_num, chunk_id, {"raw": line}))
+                chunk_id += 1
+                continue
 
+            # Проверка на таблицу
+            if re_table.match(line):
+                is_header = True
+                if current_block:
+                    chunks.append(self._make_text_chunk('\n'.join(current_block), page_num, chunk_id))
+                    chunk_id += 1
+                    current_block = []
+                chunks.append(self._make_chunk("table_ref", line, page_num, chunk_id, {"raw": line}))
+                chunk_id += 1
+                continue
+
+            # Проверка на заголовок раздела
+            match_sec = re_section.match(line)
+            if match_sec:
+                is_header = True
+                if current_block:
+                    chunks.append(self._make_text_chunk('\n'.join(current_block), page_num, chunk_id))
+                    chunk_id += 1
+                    current_block = []
+                
+                num, title = match_sec.groups()
                 chunks.append(self._make_chunk(
-                    chunk_type="figure_ref",
-                    text=line,
-                    page=page_num,
-                    chunk_id=chunk_id,
-                    metadata={"figure_number": self._extract_num(line)}
+                    "section_header", 
+                    line, 
+                    page_num, 
+                    chunk_id, 
+                    {"section_number": num, "title": title}
                 ))
                 chunk_id += 1
-
-            # Таблица
-            elif re.match(r'^[Тт](аблица|аб\.?)?\s*\d+', line):
+                continue
+            
+            # Проверка на одиночный заголовок
+            if re_standalone.match(line):
+                is_header = True
                 if current_block:
                     chunks.append(self._make_text_chunk('\n'.join(current_block), page_num, chunk_id))
                     chunk_id += 1
                     current_block = []
-
-                chunks.append(self._make_chunk(
-                    chunk_type="table_ref",
-                    text=line,
-                    page=page_num,
-                    chunk_id=chunk_id,
-                    metadata={"table_number": self._extract_num(line)}
-                ))
+                chunks.append(self._make_chunk("section_header", line, page_num, chunk_id, {"title": line}))
                 chunk_id += 1
-
-            # Заголовок раздела
-            elif re.match(r'^\d+(?:\.\d+)+\s+.+$', line):
-                if current_block:
-                    chunks.append(self._make_text_chunk('\n'.join(current_block), page_num, chunk_id))
-                    chunk_id += 1
-                    current_block = []
-
-                match = re.match(r'^(\d+(?:\.\d+)+)\s+(.+)$', line)
-                if match:
-                    chunks.append(self._make_chunk(
-                        chunk_type="section_header",
-                        text=line,
-                        page=page_num,
-                        chunk_id=chunk_id,
-                        metadata={
-                            "section_number": match.group(1),
-                            "section_title": match.group(2)
-                        }
-                    ))
-                    chunk_id += 1
+                continue
 
             # Обычный текст
-            else:
-                current_block.append(line)
+            current_block.append(line)
 
-        # Добавляем последний блок
         if current_block:
             chunks.append(self._make_text_chunk('\n'.join(current_block), page_num, chunk_id))
 
         return chunks
 
-    def _extract_num(self, text: str) -> Optional[str]:
-        """Извлекает номер из текста (для рисунков, таблиц)"""
-        match = re.search(r'\d+', text)
-        return match.group() if match else None
-
-    def _make_chunk(self, chunk_type: str, text: str, page: int, chunk_id: int,
-                    metadata: Dict = None) -> DocumentChunk:
-        """Создает чанк с метаданными"""
+    def _make_chunk(self, ctype: str, text: str, page: int, cid: int, meta: Dict = None) -> DocumentChunk:
         return DocumentChunk(
-            chunk_id=f"{chunk_id:04d}",
-            chunk_type=chunk_type,
-            text=text[:3000],  # Ограничиваем размер
+            chunk_id=f"p{page}_c{cid}",
+            chunk_type=ctype,
+            text=text[:3000],
             location={"page": page},
-            metadata=metadata or {},
-            context_query=self.context_queries.get(chunk_type, "правила оформления технической документации ГОСТ")
+            metadata=meta or {},
+            context_query=self.context_queries.get(ctype, "ГОСТ")
         )
 
-    def _make_text_chunk(self, text: str, page: int, chunk_id: int) -> DocumentChunk:
-        """Создает текстовый чанк с расширенными метаданными"""
+    def _make_text_chunk(self, text: str, page: int, cid: int) -> DocumentChunk:
         meta = {
-            "word_count": len(text.split()),
-            "has_formulas": bool(re.search(r'\[?\d+\]?|\([^)]+\)', text)),
-            "has_lists": bool(re.search(r'^[–•\-)\d\.]\s+', text, re.MULTILINE)),
-            "has_gost_ref": bool(re.search(r'ГОСТ\s+\d+', text)),
-            "has_requirements": bool(re.search(r'(должен|следует|требуется|не допускается)', text, re.IGNORECASE))
+            "words": len(text.split()),
+            "has_lists": bool(re.search(r'^[-•\d)]', text, re.MULTILINE))
         }
-        return self._make_chunk("text", text, page, chunk_id, metadata=meta)
-
-    def save_chunks(self, chunks: List[DocumentChunk], output_path: str):
-        """
-        Сохраняет чанки в JSON файл.
-
-        Args:
-            chunks: Список чанков
-            output_path: Путь для сохранения
-        """
-        from collections import Counter
-
-        types = Counter(c.chunk_type for c in chunks)
-        data = {
-            "total_chunks": len(chunks),
-            "types": dict(types),
-            "chunks": [c.to_dict() for c in chunks]
-        }
-
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"✅ Сохранено {len(chunks)} чанков в {output_path}")
-        logger.info(f"📊 Типы чанков: {dict(types)}")
+        return self._make_chunk("text", text, page, cid, meta)

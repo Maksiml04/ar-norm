@@ -1,29 +1,24 @@
+# Используем легкий образ Python
 FROM python:3.11-slim
 
-# Установка рабочей директории
-WORKDIR /app
-
-# Установка системных зависимостей (для компиляции некоторых пакетов)
+# Устанавливаем системные зависимости (нужны для некоторых библиотек)
 RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Копирование требований и установка зависимостей
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Рабочая директория внутри контейнера
+WORKDIR /app
 
-# Копирование исходного кода
+# Копируем зависимости и устанавливаем их
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements
+
+# Копируем весь код проект
 COPY . .
 
-# Создание директорий для логов и данных
-RUN mkdir -p logs data
-
-# Переменные окружения по умолчанию
-ENV PYTHONPATH=/app
-ENV LOG_LEVEL=INFO
-
-# Порт приложения
+# Открываем порт (по умолчанию 8000 для FastAPI)
 EXPOSE 8000
 
-# Команда запуска
+# Команда запуска сервера
+# Важно: host 0.0.0.0 обязателен для работы внутри контейнера
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
