@@ -109,4 +109,7 @@ def get_logger(name: str = "ai_normkontroler") -> logging.Logger:
     logger.info(f"PID процесса: {os.getpid()}")
     logger.info("-" * 80)
 
+    # ИЛИ внутри функции:
+    logger.setLevel(logging.DEBUG)
+
     return logger

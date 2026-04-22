@@ -96,10 +96,33 @@ class LLMAnalyzer:
         if not self.api_key:
             raise ValueError("API ключ не предоставлен. Установите OPENROUTER_API_KEY.")
 
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=base_url
-        )
+        # --- ДИАГНОСТИКА НАЧАЛО ---
+        logger.debug(f"🔍 Попытка инициализации OpenAI клиент...")
+        logger.debug(f"🔍 API Key starts with: {self.api_key[:5]}...")
+        logger.debug(f"🔍 Base URL: {base_url}")
+
+        # Проверка на наличие 'proxies' в локальных переменных или аргументах, если они вдруг просочились
+        # Явно создаем словарь аргументов
+        client_kwargs = {
+            "api_key": self.api_key,
+            "base_url": base_url
+        }
+
+        # Если вдруг в окружении есть http_proxy/https_proxy, библиотека openai может пытаться их подхватить автоматически
+        # Но ошибка "unexpected keyword argument 'proxies'" говорит о том, что кто-то ЯВНО передает proxies=...
+        # Давайте убедимся, что мы ничего лишнего не передаем.
+        logger.debug(f"🔍 Передаваемые аргументы в OpenAI(): {client_kwargs.keys()}")
+        # --- ДИАГНОСТИКА КОНЕЦ ---
+
+        try:
+            self.client = OpenAI(**client_kwargs)
+            logger.info("✅ OpenAI клиент успешно инициализирован.")
+        except TypeError as e:
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА инициализации OpenAI: {e}")
+            logger.error(f"❌ Версия библиотеки openai: {openai.__version__}")
+            # Пробрасываем ошибку дальше, чтобы сервис упал и было видно в логах
+            raise e
+
         self.model = "deepseek/deepseek-v3.2"
 
         # Категории правил, относящиеся к заголовкам
