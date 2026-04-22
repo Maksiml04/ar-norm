@@ -7,6 +7,7 @@ import sys
 import tempfile
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+from fastapi.responses import JSONResponse, HTMLResponse
 
 # Добавляем корень проекта в PYTHONPATH
 current_dir = Path(__file__).resolve().parent.parent
@@ -516,6 +517,14 @@ async def get_upload_page():
     </body>
     </html>
     """
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    """Отдает HTML интерфейс пользователя."""
+    html_path = Path(__file__).parent / "index.html"
+    if html_path.exists():
+        return html_path.read_text(encoding="utf-8")
+    return "<h1>Интерфейс не найден. Используйте /docs для API.</h1>"
 
 @app.get("/health", response_model=HealthCheck)
 async def health_check():

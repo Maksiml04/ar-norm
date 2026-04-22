@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Нормконтролер</title>
+    <style>
+        :root { --primary: #2563eb; --bg: #f3f4f6; --card: #ffffff; --text: #1f2937; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { max-width: 800px; width: 100%; background: var(--card); padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: var(--primary); margin-bottom: 10px; }
+        p.subtitle { text-align: center; color: #6b7280; margin-bottom: 30px; }
+
+        .upload-area { border: 2px dashed #d1d5db; border-radius: 8px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; }
+        .upload-area:hover { border-color: var(--primary); background: #eff6ff; }
+        .upload-area.dragover { border-color: var(--primary); background: #dbeafe; }
+
+        input[type="file"] { display: none; }
+        .btn { background: var(--primary); color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; width: 100%; margin-top: 20px; transition: background 0.2s; }
+        .btn:hover { background: #1d4ed8; }
+        .btn:disabled { background: #9ca3af; cursor: not-allowed; }
+
+        #file-name { margin-top: 10px; font-weight: bold; color: var(--primary); }
+
+        .results { margin-top: 30px; }
+        .status-badge { display: inline-block; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; margin-bottom: 20px; }
+        .status-pass { background: #d1fae5; color: #065f46; }
+        .status-fail { background: #fee2e2; color: #991b1b; }
+
+        .violation-card { background: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+        .violation-card h4 { margin: 0 0 5px 0; color: #991b1b; }
+        .violation-card p { margin: 5px 0; font-size: 14px; }
+        .rule-ref { font-size: 12px; color: #6b7280; font-style: italic; }
+
+        .loader { display: none; text-align: center; margin: 20px 0; }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid var(--primary); border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 0 auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Нормконтролер</h1>
+        <p class="subtitle">Автоматическая проверка документов на соответствие ГОСТ 2.105-95</p>
+
+        <form id="uploadForm">
+            <div class="upload-area" id="dropZone">
+                <p>📄 Перетащите PDF сюда или нажмите для выбора</p>
+                <input type="file" id="fileInput" accept=".pdf" required>
+                <div id="file-name"></div>
+            </div>
+            <button type="submit" class="btn" id="submitBtn">Запустить анализ</button>
+        </form>
+
+        <div class="loader" id="loader">
+            <div class="spinner"></div>
+            <p>Анализируем документ... Это может занять несколько минут.</p>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileName = document.getElementById('file-name');
+        const form = document.getElementById('uploadForm');
+        const resultsDiv = document.getElementById('results');
+        const loader = document.getElementById('loader');
+        const submitBtn = document.getElementById('submitBtn');
+
+        // Drag & Drop
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                updateFileName();
+            }
+        });
+        fileInput.addEventListener('change', updateFileName);
+
+        function updateFileName() {
+            if (fileInput.files.length > 0) fileName.textContent = `Выбран: ${fileInput.files[0].name}`;
+        }
+
+        // Upload & Analyze
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!fileInput.files.length) return alert('Выберите файл!');
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            submitBtn.disabled = true;
+            loader.style.display = 'block';
+            resultsDiv.innerHTML = '';
+
+            try {
+                // Замените URL на адрес вашего сервиса на Render, если тестируете локально оставьте относительный
+                const response = await fetch('/api/upload', { method: 'POST', body: formData });
+
+                if (!response.ok) throw new Error('Ошибка сервера');
+
+                const data = await response.json();
+                renderResults(data);
+            } catch (error) {
+                resultsDiv.innerHTML = `<p style="color:red; text-align:center;">Ошибка: ${error.message}</p>`;
+            } finally {
+                submitBtn.disabled = false;
+                loader.style.display = 'none';
+            }
+        });
+
+        function renderResults(data) {
+            const statusClass = data.status === 'PASS' ? 'status-pass' : 'status-fail';
+            let html = `
+                <div style="text-align:center;">
+                    <span class="status-badge ${statusClass}">${data.status === 'PASS' ? '✅ Нарушений не найдено' : '❌ Найдено нарушений: ' + data.violations_found}</span>
+                    <p>Страниц: ${data.total_pages} | Проверено блоков: ${data.chunks_analyzed}</p>
+                </div>
+            `;
+
+            if (data.violations_found > 0) {
+                html += '<h3>Детали нарушений:</h3>';
+                data.details.forEach((chunk, idx) => {
+                    if (chunk.has_violation && chunk.violations.length > 0) {
+                        html += `<div class="violation-card">
+                            <h4>Страница ${chunk.location?.page || '?'}: ${chunk.violations[0].violation_type}</h4>
+                            <p>${chunk.violations[0].explanation}</p>
+                            <p class="rule-ref">${chunk.violations[0].rule_text}</p>
+                        </div>`;
+                    }
+                });
+            } else {
+                html += '<p style="text-align:center; color:green;">Документ соответствует требованиям!</p>';
+            }
+            resultsDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
