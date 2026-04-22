@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  ai-normkontroler:
+    build: .
+    container_name: ai-normkontroler
+    ports:
+      - "8000:8000"
+    volumes:
+      # Монтируем код для горячей перезагрузки (dev режим)
+      - .:/app
+      # Отдельный том для логов, чтобы они сохранялись при пересборке
+      - app_logs:/app/logs
+      # Том для данных (индекс), чтобы не строить каждый раз заново
+      - app_data:/app/data
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=INFO
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    restart: unless-stopped
+    command: uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  app_logs:
+  app_data:
