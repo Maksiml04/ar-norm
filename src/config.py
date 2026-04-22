@@ -25,7 +25,7 @@ class Config:
         self.chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "50"))
 
         # Настройки LLM
-        self.openai_api_key = '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'
+        self.openai_api_key = os.getenv('OPENROUTER_API_KEY')
         self.llm_model = os.getenv("LLM_MODEL", "deepseek/deepseek-chat")
 
         # Пути к файлам индекса
