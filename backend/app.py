@@ -1,49 +1,40 @@
 """
-FastAPI backend для AI-нормконтролера.
-Полная версия с поддержкой загрузки PDF, анализа и встроенным UI.
+FastAPI backend для AI-нормконтролера v2.
+Главное изменение: /api/upload теперь использует PDFChunker (не pypdf+langchain).
+Все чанки получают правильные metadata → LLM работает корректно.
 """
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
-from typing import List, Optional, Dict, Any
 from pathlib import Path
-from fastapi.responses import JSONResponse, HTMLResponse
+from typing import Any, Optional
 
-# Добавляем корень проекта в PYTHONPATH
-current_dir = Path(__file__).resolve().parent.parent
-if str(current_dir) not in sys.path:
-    sys.path.insert(0, str(current_dir))
-
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-# Импорты из проекта
+# Корень проекта в PYTHONPATH
+current_dir = Path(__file__).resolve().parent.parent
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
+
 from src.main import AINormkontroler
+from src.pdf_parser import PDFChunker          # ← используем наш парсер
 from src.logging_config import get_logger
-
-# Сторонние библиотеки
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None
-
-try:
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-except ImportError:
-    RecursiveCharacterTextSplitter = None
 
 logger = get_logger(__name__)
 
-# Инициализация приложения
+# ─── Приложение ───────────────────────────────────────────────────────────────
+
 app = FastAPI(
     title="AI Нормконтролер",
-    description="Система автоматического анализа инженерных документов на соответствие ГОСТ",
-    version="1.0.0"
+    description="Автоматическая проверка технической документации на соответствие ГОСТ",
+    version="2.0.0",
 )
 
-# Настройка CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,10 +43,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Глобальная переменная
 normkontroler: Optional[AINormkontroler] = None
 
-# --- Модели данных ---
+
+# ─── Pydantic-модели ──────────────────────────────────────────────────────────
+
+class AnalysisRequest(BaseModel):
+    text: str
+    chunk_type: str = "text"
+    # Опциональные метаданные для ручного запроса
+    is_centered: Optional[bool] = None
+    is_bold: Optional[bool] = None
+    font_size: Optional[float] = None
+
+
 class AnalysisResult(BaseModel):
     chunk_id: str
     has_violation: bool = False
@@ -64,18 +65,18 @@ class AnalysisResult(BaseModel):
     confidence: float = 0.0
     location: Optional[dict] = None
     applied_rules: list = []
+    text: Optional[str] = None
     error: Optional[str] = None
 
-class AnalysisRequest(BaseModel):
-    text: str
-    chunk_type: str = "text"
 
 class HealthCheck(BaseModel):
     status: str
     message: str
     rules_loaded: int = 0
 
-# --- HTML Интерфейс (встроенный) ---
+
+# ─── HTML-интерфейс ───────────────────────────────────────────────────────────
+
 HTML_CONTENT = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -84,361 +85,332 @@ HTML_CONTENT = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Нормконтролер</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f4f6f9; color: #333; }
+        body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f4f6f9; color: #333; }
         .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        h1 { color: #2c3e50; text-align: center; margin-bottom: 10px; }
+        h1 { color: #2c3e50; text-align: center; }
         .subtitle { text-align: center; color: #7f8c8d; margin-bottom: 30px; }
-        
         .tabs { display: flex; justify-content: center; margin-bottom: 20px; border-bottom: 2px solid #eee; }
-        .tab { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 16px; color: #7f8c8d; transition: 0.3s; }
+        .tab { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 16px; color: #7f8c8d; }
         .tab.active { color: #3498db; border-bottom: 3px solid #3498db; font-weight: bold; }
-        .tab:hover { color: #2980b9; }
-        
         .panel { display: none; }
-        .panel.active { display: block; animation: fadeIn 0.5s; }
-        
-        textarea { width: 100%; height: 200px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; resize: vertical; font-family: inherit; font-size: 14px; box-sizing: border-box; }
-        textarea:focus { outline: none; border-color: #3498db; box-shadow: 0 0 5px rgba(52,152,219,0.3); }
-        
-        .file-upload { border: 2px dashed #ddd; padding: 30px; text-align: center; border-radius: 8px; cursor: pointer; transition: 0.3s; }
+        .panel.active { display: block; }
+        textarea { width: 100%; height: 200px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; resize: vertical; font-size: 14px; box-sizing: border-box; }
+        .file-upload { border: 2px dashed #ddd; padding: 30px; text-align: center; border-radius: 8px; cursor: pointer; }
         .file-upload:hover { border-color: #3498db; background: #f0f8ff; }
         input[type="file"] { display: none; }
-        
-        button { background: #3498db; color: white; border: none; padding: 12px 25px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 15px; width: 100%; transition: 0.3s; font-weight: 600; }
-        button:hover { background: #2980b9; transform: translateY(-1px); }
-        button:disabled { background: #bdc3c7; cursor: not-allowed; transform: none; }
-        
+        button { background: #3498db; color: white; border: none; padding: 12px 25px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 15px; width: 100%; font-weight: 600; }
+        button:hover { background: #2980b9; }
+        button:disabled { background: #bdc3c7; cursor: not-allowed; }
         .result { margin-top: 25px; padding: 20px; background: #f8f9fa; border-radius: 8px; border-left: 5px solid #bdc3c7; }
-        .result.error { border-left-color: #e74c3c; background: #fdedec; }
+        .result.error   { border-left-color: #e74c3c; background: #fdedec; }
         .result.success { border-left-color: #2ecc71; background: #eafaf1; }
-        .result.warning { border-left-color: #f39c12; background: #fef9e7; }
-        
-        .loading { opacity: 0.7; pointer-events: none; position: relative; }
-        .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s ease-in-out infinite; margin-right: 10px; vertical-align: middle; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        
         .violation-item { background: white; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #eee; }
         .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; }
-        .badge-high { background: #e74c3c; }
-        .badge-medium { background: #f39c12; }
-        .badge-low { background: #3498db; }
+        .badge-critical { background: #c0392b; }
+        .badge-major    { background: #e74c3c; }
+        .badge-minor    { background: #f39c12; }
+        .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s linear infinite; vertical-align: middle; margin-right: 8px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔍 AI Нормконтролер</h1>
-        <p class="subtitle">Автоматическая проверка документации по ГОСТ 2.105-95</p>
+<div class="container">
+    <h1>🔍 AI Нормконтролер</h1>
+    <p class="subtitle">Автоматическая проверка документации по ГОСТ 2.105-95</p>
 
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('text')">Текст</button>
-            <button class="tab" onclick="switchTab('file')">Файл (PDF)</button>
-        </div>
-
-        <!-- Панель текста -->
-        <div id="panel-text" class="panel active">
-            <textarea id="textInput" placeholder="Вставьте фрагмент текста документа здесь для проверки..."></textarea>
-            <button onclick="analyzeText()" id="btnText">Проверить текст</button>
-        </div>
-
-        <!-- Панель файла -->
-        <div id="panel-file" class="panel">
-            <label class="file-upload">
-                <input type="file" id="fileInput" accept=".pdf" onchange="updateFileName()">
-                <span id="fileName">Нажмите, чтобы выбрать PDF файл</span>
-            </label>
-            <button onclick="uploadFile()" id="btnFile">Загрузить и анализировать</button>
-        </div>
-
-        <div id="result" class="result" style="display:none;"></div>
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('text', event)">Текст</button>
+        <button class="tab"        onclick="switchTab('file', event)">Файл (PDF)</button>
     </div>
 
-    <script>
-        const API_URL = 'http://localhost:8000';
+    <div id="panel-text" class="panel active">
+        <textarea id="textInput" placeholder="Вставьте фрагмент текста для проверки..."></textarea>
+        <button onclick="analyzeText()" id="btnText">Проверить текст</button>
+    </div>
 
-        function switchTab(tab) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-            
-            event.target.classList.add('active');
-            document.getElementById(`panel-${tab}`).classList.add('active');
-            document.getElementById('result').style.display = 'none';
-        }
+    <div id="panel-file" class="panel">
+        <label class="file-upload">
+            <input type="file" id="fileInput" accept=".pdf" onchange="updateFileName()">
+            <span id="fileName">Нажмите, чтобы выбрать PDF файл</span>
+        </label>
+        <button onclick="uploadFile()" id="btnFile">Загрузить и анализировать</button>
+    </div>
 
-        function updateFileName() {
-            const input = document.getElementById('fileInput');
-            const span = document.getElementById('fileName');
-            if (input.files.length > 0) {
-                span.textContent = `Выбран файл: ${input.files[0].name}`;
-                span.style.color = '#27ae60';
-                span.style.fontWeight = 'bold';
-            }
-        }
+    <div id="result" class="result" style="display:none;"></div>
+</div>
 
-        function showResult(html, type) {
-            const div = document.getElementById('result');
-            div.className = `result ${type}`;
-            div.innerHTML = html;
-            div.style.display = 'block';
-            div.scrollIntoView({ behavior: 'smooth' });
-        }
+<script>
+const API = '';
 
-        async function analyzeText() {
-            const text = document.getElementById('textInput').value;
-            const btn = document.getElementById('btnText');
-            if (!text.trim()) return alert('Введите текст');
+function switchTab(tab, e) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    e.target.classList.add('active');
+    document.getElementById('panel-' + tab).classList.add('active');
+    document.getElementById('result').style.display = 'none';
+}
 
-            btn.classList.add('loading');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span> Анализ...';
+function updateFileName() {
+    const f = document.getElementById('fileInput').files[0];
+    if (f) {
+        const span = document.getElementById('fileName');
+        span.textContent = 'Выбран: ' + f.name;
+        span.style.color = '#27ae60';
+    }
+}
 
-            try {
-                const res = await fetch(`${API_URL}/api/analyze`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, chunk_type: 'text' })
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
-                
-                renderSingleResult(data[0]);
-            } catch (e) {
-                showResult(`<strong>Ошибка:</strong> ${e.message}`, 'error');
-            } finally {
-                btn.classList.remove('loading');
-                btn.disabled = false;
-                btn.textContent = 'Проверить текст';
-            }
-        }
+function showResult(html, type) {
+    const d = document.getElementById('result');
+    d.className = 'result ' + type;
+    d.innerHTML = html;
+    d.style.display = 'block';
+    d.scrollIntoView({ behavior: 'smooth' });
+}
 
-        async function uploadFile() {
-            const input = document.getElementById('fileInput');
-            const btn = document.getElementById('btnFile');
-            if (!input.files.length) return alert('Выберите файл');
+async function analyzeText() {
+    const text = document.getElementById('textInput').value.trim();
+    const btn  = document.getElementById('btnText');
+    if (!text) return alert('Введите текст');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Анализ...';
+    try {
+        const res  = await fetch(API + '/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, chunk_type: 'text' })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
+        renderSingle(data[0]);
+    } catch(e) {
+        showResult('<strong>Ошибка:</strong> ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Проверить текст';
+    }
+}
 
-            const formData = new FormData();
-            formData.append('file', input.files[0]);
+async function uploadFile() {
+    const input = document.getElementById('fileInput');
+    const btn   = document.getElementById('btnFile');
+    if (!input.files.length) return alert('Выберите файл');
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Загрузка и анализ...';
+    try {
+        const res  = await fetch(API + '/api/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
+        renderReport(data);
+        console.log('Полный отчёт:', data);
+    } catch(e) {
+        showResult('<strong>Ошибка:</strong> ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Загрузить и анализировать';
+    }
+}
 
-            btn.classList.add('loading');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span> Загрузка и анализ...';
+function severityClass(s) {
+    return s === 'critical' ? 'badge-critical' : s === 'major' ? 'badge-major' : 'badge-minor';
+}
 
-            try {
-                const res = await fetch(`${API_URL}/api/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
+function renderSingle(r) {
+    let html = '<strong>' + (r.has_violation ? '❌ Нарушения найдены' : '✅ Нарушений нет') + '</strong><br>';
+    html += 'Уверенность: ' + ((r.confidence || 0) * 100).toFixed(1) + '%<br>';
+    (r.violations || []).forEach(v => {
+        html += '<div class="violation-item"><span class="badge ' + severityClass(v.severity) + '">' +
+                (v.rule_id || '?') + '</span> ' + v.violation_type + '<br><small>' + v.explanation + '</small></div>';
+    });
+    showResult(html, r.has_violation ? 'error' : 'success');
+}
 
-                let html = `<strong>Отчет по файлу:</strong> ${data.filename}<br>`;
-                html += `Страниц: ${data.total_pages} | Чанков: ${data.chunks_analyzed}<br>`;
-                html += `<strong>Статус:</strong> <span style="color:${data.status === 'PASS' ? 'green' : 'red'}">${data.status}</span><br>`;
-                html += `<strong>Найдено нарушений:</strong> ${data.violations_found}<hr>`;
-                
-                // Показываем первые 5 нарушений подробно
-                let count = 0;
-                data.details.forEach((chunk, idx) => {
-                    if (chunk.has_violation && count < 5) {
-                        count++;
-                        html += `<div class="violation-item">
-                            <strong>Стр. ${chunk.location?.page || '?'}:</strong> Найдено нарушений<br>
-                            <small>${chunk.text.substring(0, 100)}...</small><br>
-                            <ul>`;
-                        chunk.violations.forEach(v => {
-                            const severityClass = v.severity === 'high' ? 'badge-high' : (v.severity === 'medium' ? 'badge-medium' : 'badge-low');
-                            html += `<li><span class="badge ${severityClass}">${v.rule_id}</span> ${v.description}</li>`;
-                        });
-                        html += `</ul></div>`;
-                    }
-                });
-                
-                if (data.violations_found > 5) html += `<p>...и еще ${data.violations_found - 5} нарушений (см. полный JSON в консоли)</p>`;
-                if (data.violations_found === 0) html += `<p>Нарушений не найдено! Документ соответствует нормам.</p>`;
+function renderReport(data) {
+    let html = '<strong>Файл:</strong> ' + data.filename + '<br>';
+    html += 'Страниц: ' + data.total_pages + ' | Чанков: ' + data.chunks_analyzed + '<br>';
+    html += '<strong>Нарушений:</strong> ' + data.violations_found + ' | ';
+    html += '<strong>Статус:</strong> <span style="color:' + (data.status==='PASS'?'green':'red') + '">' + data.status + '</span><hr>';
 
-                showResult(html, data.status === 'PASS' ? 'success' : 'error');
-                console.log('Полный отчет:', data);
+    let shown = 0;
+    (data.details || []).forEach(chunk => {
+        if (!chunk.has_violation || shown >= 5) return;
+        shown++;
+        html += '<div class="violation-item"><strong>Стр. ' + (chunk.location?.page || '?') +
+                ' [' + (chunk.chunk_type || 'text') + ']:</strong><br>';
+        html += '<small>' + (chunk.text || '').substring(0, 120) + '…</small>';
+        (chunk.violations || []).forEach(v => {
+            html += '<div style="margin-top:6px"><span class="badge ' + severityClass(v.severity) + '">' +
+                    (v.rule_id || '?') + '</span> ' + v.violation_type + '<br><small>' + v.explanation + '</small></div>';
+        });
+        html += '</div>';
+    });
 
-            } catch (e) {
-                showResult(`<strong>Ошибка:</strong> ${e.message}`, 'error');
-            } finally {
-                btn.classList.remove('loading');
-                btn.disabled = false;
-                btn.textContent = 'Загрузить и анализировать';
-            }
-        }
+    if (data.violations_found > 5)
+        html += '<p>...и ещё ' + (data.violations_found - 5) + ' нарушений (см. консоль)</p>';
+    if (data.violations_found === 0)
+        html += '<p>Нарушений не найдено!</p>';
 
-        function renderSingleResult(result) {
-            const div = document.getElementById('result');
-            const type = result.has_violation ? 'error' : 'success';
-            
-            let html = `<strong>Результат:</strong> ${result.has_violation ? '❌ Нарушения найдены' : '✅ Нарушений нет'}<br>`;
-            html += `<strong>Уверенность:</strong> ${(result.confidence * 100).toFixed(1)}%<br>`;
-
-            if (result.violations && result.violations.length > 0) {
-                html += '<hr><strong>Детали:</strong>';
-                result.violations.forEach(v => {
-                    const sev = v.severity || 'medium';
-                    const badgeClass = sev === 'high' ? 'badge-high' : (sev === 'medium' ? 'badge-medium' : 'badge-low');
-                    html += `<div class="violation-item">
-                        <span class="badge ${badgeClass}">${v.rule_id}</span> 
-                        <strong>${v.description}</strong><br>
-                        <small>ГОСТ: ${v.rule_id}</small>
-                    </div>`;
-                });
-            }
-            showResult(html, type);
-        }
-    </script>
+    showResult(html, data.status === 'PASS' ? 'success' : 'error');
+}
+</script>
 </body>
 </html>
 """
 
-# --- События старта ---
+
+# ─── Startup ──────────────────────────────────────────────────────────────────
+
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     global normkontroler
-    logger.info("Запуск системы AI Нормконтролер...")
-    try:
-        data_dir = current_dir / "data"
-        index_path = data_dir / "gost.index"
-        meta_path = data_dir / "gost_rules_meta.pkl"
-        api_key = os.getenv('OPENROUTER_API_KEY')
+    logger.info("Запуск AI Нормконтролер...")
 
-        if not api_key:
-            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: OPENROUTER_API_KEY не установлена!")
-        else:
-            logger.info(f"API ключ найден ({api_key[:5]}...)")
+    data_dir   = current_dir / "data"
+    index_path = data_dir / "gost.index"
+    meta_path  = data_dir / "gost_rules_meta.pkl"
+    api_key    = os.getenv("OPENROUTER_API_KEY")
 
-        if index_path.exists() and meta_path.exists():
-            logger.info(f"Загрузка индекса из {index_path}")
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY не установлен!")
+    else:
+        logger.info(f"API ключ: {api_key[:5]}…")
+
+    if index_path.exists() and meta_path.exists():
+        try:
             normkontroler = AINormkontroler.load_from_index(
                 index_path=str(index_path),
                 meta_path=str(meta_path),
-                api_key=api_key
+                api_key=api_key,
             )
-            if hasattr(normkontroler, 'analyzer') and normkontroler.analyzer:
-                logger.info("✅ Система полностью готова (Rules + LLM).")
-            else:
-                logger.warning("⚠️ LLM анализатор отсутствует.")
-            logger.info(f"Загружено правил: {len(normkontroler.rules)}")
-        else:
-            logger.warning("Индекс не найден. Режим ограниченный.")
-            normkontroler = None
-    except Exception as e:
-        logger.error(f"Ошибка инициализации: {e}", exc_info=True)
-        raise
+            logger.info(f"✅ Система готова. Правил: {len(normkontroler.rules)}")
+        except Exception as e:
+            logger.error(f"Ошибка инициализации: {e}", exc_info=True)
+            raise
+    else:
+        logger.warning("Индекс не найден. Запуск в деградированном режиме.")
+        normkontroler = None
 
-# --- Эндпоинты ---
+
+# ─── Эндпоинты ────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root():
-    """Отдает HTML страницу интерфейса"""
-    html_path = Path(__file__).parent / "index.html"
-    if html_path.exists():
-        with open(html_path, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>Ошибка: index.html не найден</h1>"
+async def read_root() -> str:
+    """Встроенный HTML-интерфейс."""
+    html_file = Path(__file__).parent / "index.html"
+    if html_file.exists():
+        return html_file.read_text(encoding="utf-8")
+    return HTML_CONTENT
+
 
 @app.get("/health", response_model=HealthCheck)
-async def health_check():
-    """Проверка здоровья сервиса (JSON)."""
+async def health_check() -> HealthCheck:
     if normkontroler:
-        return HealthCheck(status="healthy", message="Готов к работе", rules_loaded=len(normkontroler.rules))
+        return HealthCheck(
+            status="healthy",
+            message="Готов к работе",
+            rules_loaded=len(normkontroler.rules),
+        )
     return HealthCheck(status="degraded", message="Индекс не загружен", rules_loaded=0)
 
-@app.post("/api/analyze", response_model=List[AnalysisResult])
-async def analyze_text(request: AnalysisRequest):
-    if not normkontroler:
-        raise HTTPException(status_code=503, detail="Система не инициализирована")
+
+@app.post("/api/analyze", response_model=list[AnalysisResult])
+async def analyze_text(request: AnalysisRequest) -> list[AnalysisResult]:
+    """Анализирует переданный текст (ручной ввод)."""
+    if normkontroler is None:
+        raise HTTPException(503, "Система не инициализирована")
+
+    # Собираем чанк в том же формате что PDFChunker
+    chunk: dict[str, Any] = {
+        "id":         "manual_request",
+        "text":       request.text,
+        "chunk_type": request.chunk_type,
+        "location":   {},
+        "metadata": {
+            # Пробрасываем метаданные если переданы
+            "known_abbreviations": {},
+            **({"is_centered": request.is_centered}
+               if request.is_centered is not None else {}),
+            **({"is_bold": request.is_bold}
+               if request.is_bold is not None else {}),
+            **({"font_size": request.font_size}
+               if request.font_size is not None else {}),
+        },
+        "context_query": "",
+    }
+
     try:
-        logger.info(f"Запрос анализа: длина={len(request.text)}")
-        chunk = {
-            "id": "manual_request",
-            "text": request.text,
-            "chunk_type": request.chunk_type,
-            "location": {}
-        }
-        result_dict = normkontroler.analyze_chunk(chunk)
-        return [AnalysisResult(**result_dict)]
+        result = normkontroler.analyze_chunk(chunk)
+        return [AnalysisResult(**{
+            k: result.get(k)
+            for k in AnalysisResult.model_fields
+        })]
     except Exception as e:
         logger.error(f"Ошибка анализа: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
+
 
 @app.post("/api/upload")
-async def upload_and_analyze(file: UploadFile = File(...)):
-    if not normkontroler:
-        raise HTTPException(status_code=503, detail="Система не инициализирована")
-    if PdfReader is None:
-        raise HTTPException(status_code=500, detail="Библиотека pypdf не установлена")
+async def upload_and_analyze(file: UploadFile = File(...)) -> dict[str, Any]:
+    """
+    Загружает PDF, разбивает через PDFChunker и анализирует каждый чанк.
 
-    logger.info(f"Загрузка файла: {file.filename}")
+    Теперь чанки имеют:
+    - правильный chunk_type (section_header, table_ref, …)
+    - metadata с is_centered, is_bold, known_abbreviations
+    - context_query для FAISS-retriever
+    """
+    if normkontroler is None:
+        raise HTTPException(503, "Система не инициализирована")
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Только PDF файлы")
+        raise HTTPException(400, "Только PDF файлы")
 
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        # Сохраняем во временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
 
-        reader = PdfReader(tmp_path)
-        chunks = []
+        # ── Разбивка через PDFChunker (не pypdf!) ─────────────────────────────
+        chunker = PDFChunker()
+        doc_chunks = chunker.chunk_pdf(tmp_path)
 
-        # Простой сплиттер, если langchain нет
-        if RecursiveCharacterTextSplitter:
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        else:
-            text_splitter = None
+        if not doc_chunks:
+            raise HTTPException(400, "Не удалось извлечь текст (возможно, скан)")
 
-        logger.info(f"Обработка {len(reader.pages)} страниц...")
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if not text or not text.strip(): continue
+        logger.info(f"Чанков извлечено: {len(doc_chunks)}")
 
-            sub_chunks = text_splitter.split_text(text) if text_splitter else [text]
-            for j, sub_text in enumerate(sub_chunks):
-                if len(sub_text.strip()) < 10: continue
-                chunks.append({
-                    "id": f"page_{i+1}_chunk_{j}",
-                    "text": sub_text,
-                    "chunk_type": "text",
-                    "location": {"page": i+1}
-                })
+        # ── Анализ ────────────────────────────────────────────────────────────
+        # Используем батч-метод: один encode-вызов для всех запросов
+        chunk_dicts = [c.to_dict() for c in doc_chunks]
+        results     = normkontroler.analyze_chunks_batch(chunk_dicts)
 
-        if not chunks:
-            raise HTTPException(status_code=400, detail="Не удалось извлечь текст (скан?)")
-
-        results = []
-        violations_count = 0
-        for chunk in chunks:
-            try:
-                result = normkontroler.analyze_chunk(chunk)
-                if result.get("has_violation"): violations_count += 1
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Ошибка чанка {chunk['id']}: {e}")
-                results.append({"chunk_id": chunk["id"], "error": str(e), "has_violation": False, "violations": []})
+        violations_count = sum(1 for r in results if r.get("has_violation"))
 
         return {
-            "filename": file.filename,
-            "total_pages": len(reader.pages),
-            "chunks_analyzed": len(chunks),
+            "filename":        file.filename,
+            "total_pages":     max(
+                (c.location.get("page", 0) for c in doc_chunks), default=0
+            ),
+            "chunks_analyzed": len(doc_chunks),
             "violations_found": violations_count,
-            "status": "FAIL" if violations_count > 0 else "PASS",
-            "details": results
+            "status":          "FAIL" if violations_count > 0 else "PASS",
+            "details":         results,
         }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            try: os.unlink(tmp_path)
-            except: pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,201 +1,429 @@
 """
-Основной модуль системы AI Нормконтролер.
-Управляет загрузкой правил, поиском (FAISS) и LLM-анализом.
+
+Основной модуль системы AI Нормконтролер v2.
+
+Теперь search_rules работает через GOSTRetriever, а не заглушку.
+
 """
+
+from __future__ import annotations
+
+
+
 import os
-import pickle
-from typing import List, Dict, Any, Optional
-from pathlib import Path
 
-# Импорты библиотек
+from typing import Any, Optional
+
+
+
 try:
+
     import faiss
-except ImportError:
-    faiss = None  # Обработаем ошибку позже, если индекс действительно нужен
 
-try:
-    from openai import OpenAI
 except ImportError:
-    OpenAI = None
 
-# Локальные импорты
+    faiss = None
+
+
+
 from src.logging_config import get_logger
+
 from src.llm_analyzer import LLMAnalyzer
+
+from src.retriever import GOSTRetriever
+
+
 
 logger = get_logger(__name__)
 
 
+
+
+
 class AINormkontroler:
+
     """Основной класс системы нормоконтроля."""
 
-    def __init__(self, rules: List[Dict[str, Any]], analyzer: Optional[LLMAnalyzer] = None):
-        """
-        Инициализация системы.
 
-        Args:
-            rules: Список загруженных правил ГОСТ.
-            analyzer: Экземпляр LLM анализатора (опционально).
-        """
+
+    def __init__(
+
+        self,
+
+        rules: list[dict[str, Any]],
+
+        retriever: Optional[GOSTRetriever] = None,
+
+        analyzer: Optional[LLMAnalyzer] = None,
+
+    ) -> None:
+
         self.rules = rules
-        self.analyzer = analyzer
-        self.index = None  # Инициализируем пустым индексом
 
-        logger.info(f"AINormkontroler инициализирован. Загружено правил: {len(rules)}")
-        if self.analyzer:
-            logger.info("LLM анализатор подключен.")
-        else:
-            logger.warning("LLM анализатор НЕ подключен (режим только поиска).")
+        self.retriever = retriever
+
+        self.analyzer = analyzer
+
+
+
+        logger.info(f"AINormkontroler инициализирован. Правил: {len(rules)}")
+
+        logger.info(f"Retriever: {'✅' if retriever else '❌ не подключён'}")
+
+        logger.info(f"LLM анализатор: {'✅' if analyzer else '❌ не подключён'}")
+
+
+
+    # ── Фабричный метод ─────────────────────────────────────────────────────
+
+
 
     @classmethod
-    def load_from_index(cls, index_path: str, meta_path: str, api_key: Optional[str] = None) -> "AINormkontroler":
+
+    def load_from_index(
+
+        cls,
+
+        index_path: str,
+
+        meta_path: str,
+
+        api_key: Optional[str] = None,
+
+        device: str = "cpu",
+
+    ) -> "AINormkontroler":
+
         """
-        Загружает систему из сохраненных файлов индекса и метаданных.
+
+        Загружает систему из файлов индекса.
+
+
 
         Args:
-            index_path: Путь к файлу индекса FAISS (.index).
-            meta_path: Путь к файлу метаданных (.pkl).
-            api_key: API ключ для LLM.
 
-        Returns:
-            Экземпляр AINormkontroler.
+            index_path: путь к gost.index
+
+            meta_path:  путь к gost_rules_meta.pkl
+
+            api_key:    ключ для LLM (OpenRouter / OpenAI)
+
+            device:     'cpu' или 'cuda'
+
         """
+
         if faiss is None:
-            raise ImportError("Библиотека faiss не установлена. Выполните: pip install faiss-cpu")
 
-        logger.info(f"Загрузка индекса правил из {index_path}")
+            raise ImportError("Установите faiss-cpu: pip install faiss-cpu")
 
-        # 1. Загрузка FAISS индекса
-        try:
-            index = faiss.read_index(index_path)
-            logger.info("Индекс FAISS успешно загружен.")
-        except Exception as e:
-            logger.error(f"Ошибка чтения индекса FAISS: {e}")
-            raise
 
-        # 2. Загрузка метаданных (правил)
-        rules = []
-        try:
-            with open(meta_path, 'rb') as f:
-                meta_data = pickle.load(f)
 
-            # Обработка устаревшего формата (список)
-            if isinstance(meta_data, list):
-                logger.warning("⚠️ Обнаружен устаревший формат мета-файла (список). Попытка конвертации...")
-                # Предполагаем, что список содержит словари правил напрямую или имеет структуру
-                # Если это просто список правил, оставляем как есть
-                if len(meta_data) > 0 and isinstance(meta_data[0], dict):
-                    rules = meta_data
-                else:
-                    # Если структура сложная,可能需要 дополнительная логика, но пока берем как есть
-                    rules = meta_data
-            elif isinstance(meta_data, dict):
-                # Новый формат (словарь с ключом 'rules')
-                rules = meta_data.get('rules', [])
-                if not rules and 'data' in meta_data:
-                    rules = meta_data['data']  # Альтернативный ключ
+        # 1. GOSTRetriever загружает индекс, правила и модель в одном месте
 
-            if not rules:
-                logger.warning("Правила не найдены в файле метаданных.")
-            else:
-                logger.info(f"Успешно загружено {len(rules)} правил из метаданных.")
+        logger.info("Загрузка GOSTRetriever...")
 
-        except Exception as e:
-            logger.error(f"Ошибка загрузки метаданных: {e}", exc_info=True)
-            raise
+        retriever = GOSTRetriever.load(index_path, meta_path, device=device)
 
-        # 3. Инициализация LLM анализатора
-        analyzer = None
+        rules = retriever.rules
+
+
+
+        # 2. LLM анализатор (опционально)
+
+        analyzer: Optional[LLMAnalyzer] = None
+
         if api_key:
+
             try:
+
                 analyzer = LLMAnalyzer(api_key=api_key)
+
                 logger.info("✅ LLM анализатор инициализирован.")
+
             except Exception as e:
-                logger.error(f"Не удалось инициализировать LLM анализатор: {e}")
-                # Не прерываем запуск, система будет работать в режиме поиска без LLM
+
+                logger.error(f"Не удалось создать LLMAnalyzer: {e}")
+
         else:
-            logger.warning("API ключ не предоставлен. LLM анализатор не будет инициализирован.")
 
-        # 4. Создание экземпляра класса
-        # Передаем только rules и analyzer, так как index устанавливается внутрь объекта
-        instance = cls(rules=rules, analyzer=analyzer)
-        instance.index = index  # Сохраняем индекс внутри экземпляра
+            logger.warning("API ключ не предоставлен. LLM анализатор отключён.")
 
-        return instance
 
-    def search_rules(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+
+        return cls(rules=rules, retriever=retriever, analyzer=analyzer)
+
+
+
+    # ── Поиск правил ────────────────────────────────────────────────────────
+
+
+
+    def search_rules(
+
+        self,
+
+        chunk_text: str,
+
+        chunk_type: str = "text",
+
+        context_query: str = "",
+
+        top_k: int = 5,
+
+    ) -> list[dict[str, Any]]:
+
+        if self.retriever is None:
+
+            logger.warning("Retriever не загружен — возвращаю первые правила как fallback")
+
+            return self.rules[:top_k]
+
+
+
+        return self.retriever.search(
+
+            chunk_text=chunk_text,
+
+            chunk_type=chunk_type,
+
+            context_query=context_query,
+
+            top_k=top_k,
+
+        )
+
+
+
+    # ── Анализ чанка ────────────────────────────────────────────────────────
+
+
+
+    def analyze_chunk(self, chunk: dict[str, Any]) -> dict[str, Any]:
+
         """
-        Поиск релевантных правил по запросу.
+
+        Анализирует чанк документа на нарушения ГОСТ.
+
+
 
         Args:
-            query: Текст запроса.
-            top_k: Количество возвращаемых результатов.
+
+            chunk: словарь с ключами 'id', 'text', 'chunk_type', 'location',
+
+                   опционально 'context_query' (из PDFChunker).
 
         Returns:
-            Список найденных правил.
+
+            Словарь с полями has_violation, violations, confidence, …
+
         """
-        if self.index is None or not self.rules:
-            logger.warning("Поиск невозможен: индекс или правила не загружены.")
-            return []
 
-        # Здесь должна быть логика векторизации запроса и поиска в FAISS
-        # Для примера заглушка, если нет кода векторизации (embedding)
-        # В реальной системе здесь нужен код получения эмбеддинга запроса
-        # и вызова self.index.search(...)
+        chunk_id = chunk.get("id", "unknown")
 
-        logger.warning(f"Метод search_rules вызван, но логика поиска через FAISS требует реализации эмбеддингов.")
+        chunk_text = chunk.get("text", "")
 
-        # Временная заглушка: возврат первых попавшихся правил (удалить после реализации поиска)
-        return self.rules[:top_k]
-
-    def analyze_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Анализирует чанк документа.
-
-        Args:
-            chunk: Словарь с данными чанка (text, type, id, location).
-
-        Returns:
-            Результат анализа.
-        """
-        if not self.analyzer:
-            return {
-                "chunk_id": chunk.get("id", "unknown"),
-                "has_violation": False,
-                "violations": [],
-                "is_correct": True,
-                "confidence": 0.0,
-                "warning": "LLM анализатор не доступен."
-            }
-
-        text = chunk.get("text", "")
         chunk_type = chunk.get("chunk_type", "text")
 
-        # 1. Поиск релевантных правил
-        # Если поиск через FAISS еще не реализован полноценно, передаем все правила или часть
-        # В будущем заменить на реальный поиск: relevant_rules = self.search_rules(text, top_k=5)
-        relevant_rules = self.rules[:5]  # Временная заглушка
+        context_query = chunk.get("context_query", "")
 
-        # 2. Вызов LLM анализатора
+
+
+        # ── 1. Семантический поиск релевантных правил ────────────────────────
+
+        relevant_rules = self.search_rules(
+
+            chunk_text=chunk_text,
+
+            chunk_type=chunk_type,
+
+            context_query=context_query,
+
+            top_k=5,
+
+        )
+
+        logger.debug(
+
+            f"[{chunk_id}] Найдено {len(relevant_rules)} правил: "
+
+            f"{[r.get('gost_id') for r in relevant_rules]}"
+
+        )
+
+
+
+        # ── 2. LLM анализ ────────────────────────────────────────────────────
+
+        if not self.analyzer:
+
+            return {
+
+                "chunk_id": chunk_id,
+                "text": chunk_text,  # ← ДОБАВЛЯЕМ
+                "has_violation": False,
+                "violations": [],
+
+                "is_correct": True,
+
+                "confidence": 0.0,
+
+                "applied_rules": [r.get("gost_id") for r in relevant_rules],
+
+                "warning": "LLM анализатор не доступен.",
+
+            }
+
+
+
         try:
+
+            # ← ИСПРАВЛЕНО: передаём полный словарь chunk, а не строку chunk_text
+
             result = self.analyzer.analyze_chunk(
-                chunk_text=text,
-                chunk_type=chunk_type,
-                rules=relevant_rules
+
+                chunk=chunk,
+
+                rules=relevant_rules,
+
             )
 
-            # Добавляем метаданные чанка в результат
-            result["chunk_id"] = chunk.get("id", "unknown")
+            result["chunk_id"] = chunk_id
             result["location"] = chunk.get("location", {})
+            result["text"] = chunk_text  # ← ДОБАВЛЯЕМ текст чанка в ответ
+            result["applied_rules"] = [r.get("id") for r in relevant_rules]
 
             return result
 
+
+
         except Exception as e:
-            logger.error(f"Ошибка анализа чанка {chunk.get('id')}: {e}", exc_info=True)
+
+            logger.error(f"Ошибка анализа чанка {chunk_id}: {e}", exc_info=True)
+
             return {
-                "chunk_id": chunk.get("id", "unknown"),
+
+                "chunk_id": chunk_id,
+
                 "has_violation": False,
+
                 "violations": [],
+
                 "is_correct": True,
+
                 "confidence": 0.0,
-                "error": str(e)
+
+                "applied_rules": [],
+
+                "error": str(e),
+
             }
+
+
+
+    def analyze_chunks_batch(
+
+        self, chunks: list[dict[str, Any]]
+
+    ) -> list[dict[str, Any]]:
+
+        """
+
+        Анализирует список чанков, используя батч-поиск правил.
+
+        """
+
+        if not chunks:
+
+            return []
+
+
+
+        # Батч-поиск правил для всех чанков за один encode-вызов
+
+        if self.retriever:
+
+            all_rules = self.retriever.search_batch(chunks, top_k=5)
+
+        else:
+
+            all_rules = [self.rules[:5]] * len(chunks)
+
+
+
+        results = []
+
+        for chunk, relevant_rules in zip(chunks, all_rules):
+
+            chunk_id = chunk.get("id", "unknown")
+
+
+
+            if not self.analyzer:
+
+                results.append({
+
+                    "chunk_id": chunk_id,
+
+                    "has_violation": False,
+
+                    "violations": [],
+
+                    "is_correct": True,
+
+                    "confidence": 0.0,
+
+                    "applied_rules": [r.get("gost_id") for r in relevant_rules],
+
+                    "warning": "LLM анализатор не доступен.",
+
+                })
+
+                continue
+
+
+
+            try:
+
+                # ← ИСПРАВЛЕНО: передаём полный словарь chunk
+
+                result = self.analyzer.analyze_chunk(
+
+                    chunk=chunk,
+
+                    rules=relevant_rules,
+
+                )
+
+                result["chunk_id"] = chunk_id
+
+                result["location"] = chunk.get("location", {})
+
+                result["applied_rules"] = [r.get("gost_id") for r in relevant_rules]
+
+                results.append(result)
+
+            except Exception as e:
+
+                logger.error(f"Ошибка анализа {chunk_id}: {e}", exc_info=True)
+
+                results.append({
+
+                    "chunk_id": chunk_id,
+
+                    "has_violation": False,
+
+                    "violations": [],
+
+                    "is_correct": True,
+
+                    "confidence": 0.0,
+
+                    "applied_rules": [],
+
+                    "error": str(e),
+
+                })
+
+
+
+        return results

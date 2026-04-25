@@ -1,377 +1,651 @@
 """
-Модуль для анализа чанков с помощью LLM (DeepSeek через OpenRouter).
-Версия 2.0:
-- Очистка текста от артефактов PDF (склеивание разорванных слов).
-- Жесткая фильтрация правил по типу чанка.
-- Улучшенный промпт с инструкциями игнорирования нерелевантных правил.
-- Детальное логирование процесса.
+
+LLM Analyzer v3.0
+
+Ключевые изменения:
+
+  - analyze_chunk теперь принимает полный словарь чанка (включая metadata).
+
+  - Метаданные парсера (is_centered, known_abbreviations, section_number)
+
+    явно передаются в промпт — LLM знает факты, а не гадает.
+
+  - TextCleaner упрощён: новый парсер (extract_words) уже даёт чистый текст.
+
+  - Фильтрация правил перенесена в промпт-инструкцию, а не в Python-логику
+
+    (меньше хрупких эвристик, больше ответственности у LLM).
+
 """
-import os
-import re
+
+from __future__ import annotations
+
+
+
 import json
-from typing import List, Dict, Any, Optional
+
+import os
+
+import re
+
+from typing import Any
+
+
+
 from openai import OpenAI
 
+
+
 try:
+
     from src.logging_config import get_logger
+
 except ImportError:
+
     from logging_config import get_logger
+
+
 
 logger = get_logger(__name__)
 
 
-class TextCleaner:
-    """Утилиты для предобработки текста, извлеченного из PDF."""
 
-    @staticmethod
-    def fix_broken_words(text: str) -> str:
-        """
-        Исправляет слова, разорванные пробелом внутри слога (артефакт PDF).
-        ВАЖНО: Не склеивать всё подряд, чтобы не потерять структуру текста.
 
-        Эвристика: Склеиваем, если:
-        1. Первая часть заканчивается на согласную, вторая начинается с гласной (или наоборот),
-           И длина одной из частей очень мала (1-2 буквы), что характерно для обрыва.
-        2. ИЛИ это явные случаи из логов: "бла годаря", "являе тся".
 
-        Мы НЕ будем склеивать любые соседние слова, чтобы сохранить возможность
-        поиска лишних пробелов и опечаток.
-        """
+# ─── Вспомогательные функции ──────────────────────────────────────────────────
 
-        # Список частых ложных разрывов для принудительного исправления
-        common_fixes = {
-            "бла годаря": "благодаря",
-            "являе тся": "является",
-            "со противляемость": "сопротивляемость",
-            "лазер ного": "лазерного",
-            "из весна я": "известная",  # часто бывает "из вестна я"
-            "пов ышенных": "повышенных",
-            "при вести": "привести",
-            "о бработки": "обработки",
-            "х олодной": "холодной",
-            "дефо рмации": "деформации",
-            "научн ых": "научных",
-            "упрочнен ия": "упрочнения",
-            "промышленнос ти": "промышленности",
-            "такж е": "также",
-            "спла вы": "сплавы",
-            "м етоды": "методы",
-            "п оверхности": "поверхности",
-            "возде йствия": "воздействия",
-            "фор мы": "формы",
-            "достигае т": "достигает",
-            "ае ": "ае",  # артефакты конца строк
+
+
+def _extract_json(raw: str) -> dict[str, Any]:
+
+    """Надёжно извлекает JSON из ответа LLM."""
+
+    # Убираем markdown-фенсы
+
+    raw = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+
+
+
+    # Прямой парсинг
+
+    try:
+
+        return json.loads(raw)
+
+    except json.JSONDecodeError:
+
+        pass
+
+
+
+    # Ищем первый {...} блок
+
+    m = re.search(r"\{[\s\S]*\}", raw)
+
+    if m:
+
+        try:
+
+            return json.loads(m.group())
+
+        except json.JSONDecodeError:
+
+            pass
+
+
+
+    # Последняя попытка: чистим trailing comma и одиночные кавычки
+
+    raw = re.sub(r",\s*([\]}])", r"\1", raw).replace("'", '"')
+
+    try:
+
+        return json.loads(raw)
+
+    except json.JSONDecodeError as e:
+
+        logger.warning(f"Не удалось распарсить JSON: {e} | raw={raw[:200]}")
+
+        return {
+
+            "has_violation": False,
+
+            "violations": [],
+
+            "is_correct": True,
+
+            "confidence": 0.0,
+
+            "error": f"JSON parse error: {e}",
+
         }
 
-        cleaned_text = text
-        for bad, good in common_fixes.items():
-            cleaned_text = cleaned_text.replace(bad, good)
 
-        # Осторожная регулярка: склеиваем только если между буквами 1 пробел
-        # и одна из частей очень короткая (1 буква), что явно является ошибкой распознавания.
-        # Например: "а б" -> "аб", но "ма шина" -> оставляем "ма шина" (лучше пусть LLM заметит опечатку, чем мы склеим всё)
-        # На самом деле, для поиска опечаток лучше вообще не клеить сложные слова автоматически,
-        # а довериться LLM, передав текст как есть, но исправив явные "дыры".
 
-        # Паттерн: Буква + Пробел + Буква, где первая часть - 1 символ (часто бывает при разрывах строк)
-        # Но это рискованно. Давайте пока оставим только словарные замены выше.
-        # Если нужно склеивать больше, добавьте конкретные случаи в словарь common_fixes.
 
-        return cleaned_text
 
-    @staticmethod
-    def clean(text: str) -> str:
-        """Full cleaning chain."""
-        text = TextCleaner.fix_broken_words(text)
-        # Убираем двойные пробелы, но оставляем одинарные
-        text = re.sub(r'\s{2,}', ' ', text)
-        return text.strip()
+# ─── Главный класс ────────────────────────────────────────────────────────────
+
 
 
 class LLMAnalyzer:
-    """Класс для анализа чанков с помощью LLM DeepSeek через OpenRouter."""
 
-    def __init__(self, api_key: Optional[str] = None, base_url: str = "https://openrouter.ai/api/v1"):
-        raw_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    """
+
+    Анализирует чанк документа на нарушения ГОСТ с помощью LLM.
+
+
+
+    Ожидаемый формат входного чанка (dict):
+
+        {
+
+            "id": "p5_c3",
+
+            "text": "...",
+
+            "chunk_type": "section_header",
+
+            "location": {"page": 5},
+
+            "metadata": {
+
+                "is_centered": True,          # из нового парсера
+
+                "is_bold": False,
+
+                "font_size": 14.0,
+
+                "section_number": "3.1",
+
+                "title": "Объект испытаний",
+
+                "known_abbreviations": {       # перечень сокращений документа
+
+                    "ЛИАБ": "литий-ионная аккумуляторная батарея",
+
+                    "НКУ":  "нормальные климатические условия",
+
+                }
+
+            },
+
+            "context_query": "..."
+
+        }
+
+    """
+
+
+
+    def __init__(
+
+        self,
+
+        api_key: str | None = None,
+
+        base_url: str = "https://openrouter.ai/api/v1",
+
+        model: str = "deepseek/deepseek-v3.2",
+
+    ) -> None:
+
+        raw_key = (api_key or os.getenv("OPENROUTER_API_KEY", "")).strip()
+
         if not raw_key:
-            raise ValueError("API ключ не предоставлен.")
 
-        self.api_key = raw_key.strip()  # <-- Вот это важно!
+            raise ValueError("OPENROUTER_API_KEY не задан")
 
-        logger.info(f"Инициализация LLM анализатора. Ключ очищен (длина: {len(self.api_key)}).")
 
-        # --- ДИАГНОСТИКА НАЧАЛО ---
-        logger.debug(f"🔍 Попытка инициализации OpenAI клиент...")
-        logger.debug(f"🔍 API Key starts with: {self.api_key[:5]}...")
-        logger.debug(f"🔍 Base URL: {base_url}")
 
-        # Проверка на наличие 'proxies' в локальных переменных или аргументах, если они вдруг просочились
-        # Явно создаем словарь аргументов
-        client_kwargs = {
-            "api_key": self.api_key,
-            "base_url": base_url
-        }
+        self.client = OpenAI(api_key=raw_key, base_url=base_url)
 
-        # Если вдруг в окружении есть http_proxy/https_proxy, библиотека openai может пытаться их подхватить автоматически
-        # Но ошибка "unexpected keyword argument 'proxies'" говорит о том, что кто-то ЯВНО передает proxies=...
-        # Давайте убедимся, что мы ничего лишнего не передаем.
-        logger.debug(f"🔍 Передаваемые аргументы в OpenAI(): {client_kwargs.keys()}")
-        # --- ДИАГНОСТИКА КОНЕЦ ---
+        self.model = model
 
-        try:
-            self.client = OpenAI(**client_kwargs)
-            logger.info("✅ OpenAI клиент успешно инициализирован.")
-        except TypeError as e:
-            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА инициализации OpenAI: {e}")
-            logger.error(f"❌ Версия библиотеки openai: {openai.__version__}")
-            # Пробрасываем ошибку дальше, чтобы сервис упал и было видно в логах
-            raise e
+        logger.info(f"LLMAnalyzer инициализирован (model={model})")
 
-        self.model = "deepseek/deepseek-v3.2"
 
-        # Категории правил, относящиеся к заголовкам
-        self.header_rule_ids = {
-            "5.4.1", "5.4.2", "5.4.3", "5.4.4", "5.4.5",
-            "5.5.1" # Начало элементов с новой страницы тоже часто относится к структуре/заголовкам
-        }
 
-        # Типы чанков, которые считаются заголовками
-        self.header_chunk_types = {"section_header", "subsection_header", "header", "title_page"}
+    # ── Основной метод ────────────────────────────────────────────────────────
 
-    def _filter_rules(self, rules: List[Dict[str, Any]], chunk_type: str) -> List[Dict[str, Any]]:
+
+
+    def analyze_chunk(
+
+        self,
+
+        chunk: dict[str, Any],
+
+        rules: list[dict[str, Any]],
+
+    ) -> dict[str, Any]:
+
         """
-        Фильтрует правила на основе типа чанка.
-        Теперь использует 'белый список' ключевых слов для текста, а не просто блокирует разделы.
+
+        Анализирует чанк документа.
+
+
+
+        Args:
+
+            chunk:  Полный словарь чанка из PDFChunker.to_dict() или AINormkontroler.
+
+            rules:  Список правил из GOSTRetriever.search() (уже с _score).
+
+
+
+        Returns:
+
+            Словарь с has_violation, violations, confidence, chunk_id, location.
+
         """
+
+        chunk_text = chunk.get("text", "").strip()
+
+        chunk_type = chunk.get("chunk_type", "text")
+
+        metadata   = chunk.get("metadata", {})
+
+        chunk_id   = chunk.get("id", "unknown")
+
+        location   = chunk.get("location", {})
+
+
+
+        if not chunk_text:
+
+            return self._empty_result(chunk_id, location, comment="Пустой текст")
+
+
+
         if not rules:
-            return []
 
-        # Если это НЕ заголовок, фильтруем правила
-        if chunk_type not in self.header_chunk_types:
-
-            # Ключевые слова, которые ПОЗВОЛЕНЫ в обычном тексте (смысловые ошибки, опечатки, стиль)
-            allowed_keywords = [
-                "опечатк", "описк", "неточност", "разорванн", "перенос",  # Опечатки и переносы
-                "сокращен", "слово", "термин",  # Язык
-                "шрифт", "размер", "интервал", "черный", "четкий",  # Оформление текста (не заголовка!)
-                "абзац", "отступ", "выравнивани", "ширин",  # Структура текста
-                "формула", "таблица", "рисунок", "ссылк",  # Упоминания объектов
-                "не допускает", "запрещ", "должен", "следует"  # Общие требования
-            ]
-
-            # Правила, которые ТОЧНО ЗАПРЕЩЕНЫ для обычного текста (специфика заголовков/страниц)
-            forbidden_topics = [
-                "заголовок раздела", "заголовок подраздела", "начинаться с заглавной буквы",  # Специфика заголовков
-                "точка в конце заголовка", "переносы слов в заголовках",  # Специфика заголовков
-                "нумерация страниц", "номер страницы", "титульный лист",  # Специфика страниц
-                "новая страница", "начинаться с новой"  # Разрывы страниц
-            ]
-
-            filtered_rules = []
-
-            for rule in rules:
-                rule_text = rule.get("text", "").lower()
-                rule_id = rule.get("gost_id", "")
-
-                # 1. Проверка на явный запрет (если правило про заголовки - убираем)
-                is_forbidden = any(topic in rule_text for topic in forbidden_topics)
-
-                # 2. Проверка на разрешение (если есть ключевое слово - оставляем)
-                is_allowed = any(keyword in rule_text for keyword in allowed_keywords)
-
-                # Оставляем правило, если оно НЕ запрещено И (разрешено по ключевым словам ИЛИ это общий раздел 4.x)
-                if not is_forbidden and (is_allowed or rule_id.startswith("4.")):
-                    filtered_rules.append(rule)
-                else:
-                    # Для отладки: можно логировать, что именно отфильтровалось
-                    pass
-
-            removed_count = len(rules) - len(filtered_rules)
-            if removed_count > 0:
-                logger.debug(f"🚫 Отфильтровано {removed_count} правил (не подходят для типа '{chunk_type}').")
-
-            # Если после фильтрации ничего не осталось, но были найдены правила - значит,
-            # возможно, все найденные были про заголовки. Это нормально для текстового чанка,
-            # если рядом нет смысловых ошибок.
-            if not filtered_rules and rules:
-                logger.info(
-                    f"⚠️ Все найденные правила ({len(rules)}) отнесены к заголовкам/структуре и исключены для текста.")
-
-            return filtered_rules
-
-        return rules
-
-        # Для заголовков возвращаем всё
+            return self._empty_result(chunk_id, location, comment="Нет применимых правил")
 
 
-    def _extract_json(self, text: str) -> Dict[str, Any]:
-        """Извлекает JSON из ответа LLM (с улучшенной обработкой ошибок)."""
-        # Удаляем markdown маркеры
-        text = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
-        text = re.sub(r'^```\s*', '', text, flags=re.MULTILINE)
-        text = re.sub(r'\s*```$', '', text, flags=re.MULTILINE)
-        text = text.strip()
 
-        # Прямой парсинг
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+        # ── Строим промпт ─────────────────────────────────────────────────────
 
-        # Поиск JSON внутри текста
-        match = re.search(r'\{[\s\S]*\}', text)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
+        system_msg, user_msg = self._build_prompt(chunk_text, chunk_type, metadata, rules)
 
-        # Попытка исправления частых ошибок
-        text_fixed = re.sub(r'"\s*$', '"', text)
-        text_fixed = re.sub(r',\s*([\]}])', r'\1', text_fixed)
-        text_fixed = text_fixed.replace("'", '"')
+
+
+        logger.debug(f"[{chunk_id}] Запрос к LLM (тип={chunk_type}, правил={len(rules)})")
+
+
 
         try:
-            return json.loads(text_fixed)
-        except json.JSONDecodeError as e:
-            logger.warning(f"⚠️ Не удалось распарсить JSON: {e}")
-            logger.debug(f"Проблемный ответ: {text[:200]}...")
 
-            return {
-                "has_violation": False,
-                "violations": [],
-                "is_correct": True,
-                "confidence": 0.0,
-                "error": f"JSON Parse Error: {str(e)[:100]}"
-            }
-
-    def analyze_chunk(self, chunk_text: str, chunk_type: str, rules: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Анализирует чанк с учетом типа и отфильтрованных правил.
-        """
-        # 1. Очистка текста
-        original_text = chunk_text
-        clean_text = TextCleaner.clean(chunk_text)
-
-        if original_text != clean_text:
-            logger.debug(f"🧹 Текст очищен от артефактов (было {len(original_text)} символов, стало {len(clean_text)}).")
-
-        # 2. Фильтрация правил
-        relevant_rules = self._filter_rules(rules, chunk_type)
-
-        if not relevant_rules:
-            logger.info(f"⏭️ Пропуск анализа для типа '{chunk_type}': нет релевантных правил.")
-            return {
-                "has_violation": False,
-                "violations": [],
-                "is_correct": True,
-                "confidence": 1.0,
-                "comment": "Анализ не проводился из-за отсутствия применимых правил для этого типа блока."
-            }
-
-        logger.debug(f"📋 Применено правил: {len(relevant_rules)}. IDs: {[r.get('gost_id') for r in relevant_rules]}")
-
-        # 3. Формирование промпта
-        rules_text = "\n\n".join([
-            f"- Правило {r.get('gost_id')}: {r.get('text')}"
-            for r in relevant_rules
-        ])
-
-        system_instruction = (
-            "Ты эксперт по нормоконтролю документации ГОСТ. Твоя задача — найти нарушения ТОЛЬКО в тех правилах, "
-            "которые перечислены ниже.\n\n"
-            "ВАЖНОЕ ПРАВИЛО ФИЛЬТРАЦИИ:\n"
-            f"Тип текущего блока данных: '{chunk_type}'.\n"
-            "- Если тип блока НЕ является заголовком (например, это 'text', 'toc', 'formula'), "
-            "то правила оформления заголовков (ГОСТ 5.4.x) к этому блоку НЕ ПРИМЕНЯЮТСЯ. Игнорируй их.\n"
-            "- Анализируй только предоставленный список правил. Не выдумывай новые.\n"
-            "- Если нарушений нет, верни has_violation: false."
-        )
-
-        prompt = f"""
-{system_instruction}
-
-СПИСОК ПРОВЕРЯЕМЫХ ПРАВИЛ:
-{rules_text}
-
-ТЕКСТ ДЛЯ АНАЛИЗА:
-\"\"\"
-{clean_text}
-\"\"\"
-
-Верни ответ СТРОГО в формате JSON:
-{{
-    "has_violation": true/false,
-    "violations": [
-        {{
-            "rule_id": "ID правила из списка выше",
-            "rule_text": "Текст правила",
-            "violation_type": "Краткое название нарушения",
-            "explanation": "Почему это нарушение (со ссылкой на текст)",
-            "severity": "critical/major/minor"
-        }}
-    ],
-    "is_correct": true/false,
-    "confidence": 0.0-1.0
-}}
-"""
-
-        try:
             response = self.client.chat.completions.create(
+
                 model=self.model,
+
                 messages=[
-                    {"role": "system", "content": "Ты строгий нормоконтролер. Отвечай только JSON."},
-                    {"role": "user", "content": prompt}
+
+                    {"role": "system", "content": system_msg},
+
+                    {"role": "user",   "content": user_msg},
+
                 ],
+
                 temperature=0.1,
-                max_tokens=1500
+
+                max_tokens=1500,
+
             )
 
-            result_text = response.choices[0].message.content.strip()
-            logger.info(f"🤖 RAW ответ LLM: {result_text[:150]}...")
+            raw = response.choices[0].message.content.strip()
 
-            result = self._extract_json(result_text)
+            logger.debug(f"[{chunk_id}] LLM raw: {raw[:200]}")
 
-            # Добавляем метаданные
-            result["chunk_text"] = clean_text
-            result["chunk_type"] = chunk_type
-            result["applied_rules_count"] = len(relevant_rules)
 
-            has_violation = result.get("has_violation", False)
-            logger.info(f"✅ Анализ завершен: найдено нарушений={has_violation}")
-
-            return result
 
         except Exception as e:
-            logger.error(f"❌ Ошибка LLM-анализа: {e}", exc_info=True)
-            return {
-                "has_violation": False,
-                "violations": [],
-                "is_correct": True,
-                "confidence": 0.0,
-                "error": str(e)
-            }
 
-    def analyze_batch(self, chunks: List[Dict[str, Any]], search_func) -> List[Dict[str, Any]]:
-        """Анализирует пакет чанков."""
-        results = []
-        for chunk in chunks:
-            rules = search_func(
-                query=chunk.get("text", ""),
-                chunk_type=chunk.get("chunk_type", "text"),
-                top_k=5
+            logger.error(f"[{chunk_id}] Ошибка вызова LLM: {e}", exc_info=True)
+
+            return self._empty_result(chunk_id, location, error=str(e))
+
+
+
+        result = _extract_json(raw)
+
+        result.update({
+
+            "chunk_id":            chunk_id,
+
+            "location":            location,
+
+            "chunk_type":          chunk_type,
+
+            "applied_rules_count": len(rules),
+
+        })
+
+
+
+        logger.info(
+
+            f"[{chunk_id}] has_violation={result.get('has_violation')} "
+
+            f"violations={len(result.get('violations', []))}"
+
+        )
+
+        return result
+
+
+
+    # ── Построение промпта ────────────────────────────────────────────────────
+
+
+
+    def _build_prompt(
+
+        self,
+
+        text: str,
+
+        chunk_type: str,
+
+        metadata: dict[str, Any],
+
+        rules: list[dict[str, Any]],
+
+    ) -> tuple[str, str]:
+
+        """
+
+        Формирует system + user сообщения.
+
+
+
+        Ключевая идея: всё что знает парсер — явно сообщается LLM.
+
+        LLM не должен гадать о центрировании или расшифровках сокращений.
+
+        """
+
+
+
+        # ── Факты о чанке из метаданных парсера ──────────────────────────────
+
+        facts: list[str] = []
+
+
+
+        is_centered = metadata.get("is_centered")
+
+        if is_centered is not None:
+
+            facts.append(
+
+                f"• Выравнивание: {'по центру ✓' if is_centered else 'НЕ по центру'}"
+
             )
 
-            analysis = self.analyze_chunk(
-                chunk_text=chunk.get("text", ""),
-                chunk_type=chunk.get("chunk_type", "text"),
-                rules=rules
+
+
+        is_bold = metadata.get("is_bold")
+
+        if is_bold is not None:
+
+            facts.append(f"• Шрифт: {'жирный ✓' if is_bold else 'обычный (не жирный)'}")
+
+
+
+        font_size = metadata.get("font_size")
+
+        if font_size:
+
+            facts.append(f"• Размер шрифта: {font_size:.1f}pt")
+
+
+
+        sec_num = metadata.get("section_number")
+
+        if sec_num:
+
+            facts.append(f"• Номер раздела: {sec_num}")
+
+
+
+        # ── Перечень сокращений документа ─────────────────────────────────────
+
+        known_abbr: dict[str, str] = metadata.get("known_abbreviations", {})
+
+        abbr_block = ""
+
+        if known_abbr:
+
+            abbr_lines = "\n".join(
+
+                f"  {abbr} = {definition}"
+
+                for abbr, definition in list(known_abbr.items())[:30]
+
             )
 
-            analysis["chunk_id"] = chunk.get("id", "")
-            analysis["location"] = chunk.get("location", {})
-            analysis["applied_rules"] = rules # Сохраняем сами правила для отладки
+            abbr_block = (
 
-            results.append(analysis)
+                "\n\nСОКРАЩЕНИЯ, РАСШИФРОВАННЫЕ В ДОКУМЕНТЕ (не считать нарушением):\n"
 
-        return results
+                + abbr_lines
+
+            )
+
+
+
+        # ── Инструкция по типу чанка ──────────────────────────────────────────
+
+        type_instructions = {
+
+            "section_header": (
+
+                "Это ЗАГОЛОВОК раздела/подраздела. Проверяй правила оформления заголовков: "
+
+                "нумерацию, точку в конце, переносы, написание с заглавной буквы. "
+
+                "НЕ проверяй правила для основного текста (абзацы, отступы)."
+
+            ),
+
+            "text": (
+
+                "Это основной ТЕКСТ. Проверяй: опечатки, неправильные сокращения, "
+
+                "знаки препинания, перечисления, ссылки на рисунки/таблицы. "
+
+                "НЕ применяй правила оформления заголовков."
+
+            ),
+
+            "figure_ref": (
+
+                "Это ПОДПИСЬ К РИСУНКУ. Проверяй: наличие слова «Рисунок», "
+
+                "нумерацию, тире перед названием, точку в конце."
+
+            ),
+
+            "table_ref": (
+
+                "Это ЗАГОЛОВОК ТАБЛИЦЫ. Проверяй: наличие слова «Таблица», "
+
+                "нумерацию, тире перед названием."
+
+            ),
+
+            "toc": (
+
+                "Это СОДЕРЖАНИЕ документа. Проверяй: правильность нумерации разделов, "
+
+                "наличие точечного заполнителя, нумерацию страниц."
+
+            ),
+
+            "title_page": (
+
+                "Это ТИТУЛЬНЫЙ ЛИСТ. Проверяй: наличие обязательных реквизитов, "
+
+                "центрирование ключевых элементов."
+
+            ),
+
+            "bibliography": (
+
+                "Это СПИСОК ЛИТЕРАТУРЫ. Проверяй: оформление источников по ГОСТ."
+
+            ),
+
+        }
+
+        type_hint = type_instructions.get(
+
+            chunk_type,
+
+            f"Тип блока: {chunk_type}. Применяй правила по смыслу."
+
+        )
+
+
+
+        # ── Список правил ─────────────────────────────────────────────────────
+
+        rules_text = "\n".join(
+
+            f"[{r.get('gost_id', '?')}] {r.get('text', '')}"
+
+            for r in rules
+
+        )
+
+
+
+        # ── facts block ───────────────────────────────────────────────────────
+
+        facts_block = ""
+
+        if facts:
+
+            facts_block = "\n\nИЗВЕСТНЫЕ ФАКТЫ О БЛОКЕ (установлены парсером, НЕ проверять повторно):\n"
+
+            facts_block += "\n".join(facts)
+
+
+
+        # ── Сборка ────────────────────────────────────────────────────────────
+
+        system_msg = (
+
+            "Ты эксперт-нормоконтролёр технической документации ГОСТ. "
+
+            "Проверяй ТОЛЬКО нарушения из предоставленного списка правил. "
+
+            "Не выдумывай правила. Отвечай строго JSON без пояснений."
+
+        )
+
+
+
+        user_msg = f"""ТИП БЛОКА: {chunk_type}
+
+ИНСТРУКЦИЯ: {type_hint}{facts_block}{abbr_block}
+
+
+
+ПРИМЕНЯЕМЫЕ ПРАВИЛА ГОСТ:
+
+{rules_text}
+
+
+
+ТЕКСТ ДЛЯ ПРОВЕРКИ:
+
+\"\"\"
+
+{text}
+
+\"\"\"
+
+
+
+Верни JSON:
+
+{{
+
+    "has_violation": true/false,
+
+    "violations": [
+
+        {{
+
+            "rule_id": "ID из списка правил",
+
+            "violation_type": "краткое название",
+
+            "explanation": "что именно нарушено и где в тексте",
+
+            "severity": "critical|major|minor"
+
+        }}
+
+    ],
+
+    "is_correct": true/false,
+
+    "confidence": 0.0-1.0
+
+}}"""
+
+
+
+        return system_msg, user_msg
+
+
+
+    # ── Вспомогательные методы ────────────────────────────────────────────────
+
+
+
+    def _empty_result(
+
+        self,
+
+        chunk_id: str,
+
+        location: dict,
+
+        comment: str = "",
+
+        error: str = "",
+
+    ) -> dict[str, Any]:
+
+        result: dict[str, Any] = {
+
+            "chunk_id":      chunk_id,
+
+            "location":      location,
+
+            "has_violation": False,
+
+            "violations":    [],
+
+            "is_correct":    True,
+
+            "confidence":    1.0,
+
+        }
+
+        if comment:
+
+            result["comment"] = comment
+
+        if error:
+
+            result["error"] = error
+
+            result["confidence"] = 0.0
+
+        return result

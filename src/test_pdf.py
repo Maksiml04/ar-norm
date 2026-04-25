@@ -444,3 +444,14 @@ class PDFChunker:
             if i == 0:
                 md_lines.append("| " + " | ".join(["---"] * max_cols) + " |")
         return "\n".join(md_lines)
+
+
+# ─── Тестовый запуск (пример использования) ───────────────────────────────────
+if __name__ == "__main__":
+    # Пример использования
+    chunker = PDFChunker()
+    chunks = chunker.chunk_pdf("src/МФАС.563563.003 ПМ.pdf", save_to="output_raw.json")
+    print(f"Сырых чанков: {len(chunks)}")
+    merged = chunker.merge_text_chunks(chunks)
+    print(f"После слияния: {len(merged)}")
+    chunker.save_chunks(merged, "output_merged.json")
