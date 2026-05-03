@@ -1,0 +1,62 @@
+{
+  "experiment_name": "chunk_size_experiment",
+  "timestamp": "2026-05-03T22:40:11.902700",
+  "best_chunk_size": 800,
+  "best_metrics": {
+    "tp": 1,
+    "fp": 0,
+    "fn": 0,
+    "tn": 1,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+  },
+  "all_experiments": [
+    {
+      "experiment": "chunk_size=300",
+      "chunk_size": 300,
+      "num_chunks": 3,
+      "metrics": {
+        "tp": 2,
+        "fp": 1,
+        "fn": 0,
+        "tn": 0,
+        "precision": 0.667,
+        "recall": 1.0,
+        "f1": 0.8
+      },
+      "avg_latency_sec": 14.73
+    },
+    {
+      "experiment": "chunk_size=500",
+      "chunk_size": 500,
+      "num_chunks": 2,
+      "metrics": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 1,
+        "tn": 0,
+        "precision": 1.0,
+        "recall": 0.5,
+        "f1": 0.667
+      },
+      "avg_latency_sec": 12.27
+    },
+    {
+      "experiment": "chunk_size=800",
+      "chunk_size": 800,
+      "num_chunks": 2,
+      "metrics": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "avg_latency_sec": 6.8
+    }
+  ],
+  "conclusion": "Оптимальный размер чанка: 800 символов (F1=1.0)"
+}
