@@ -455,3 +455,44 @@ if __name__ == "__main__":
     merged = chunker.merge_text_chunks(chunks)
     print(f"После слияния: {len(merged)}")
     chunker.save_chunks(merged, "output_merged.json")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#kdfjlksdjfl;ajksdflkjasld;fjk
+p = a+b
