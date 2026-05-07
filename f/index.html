@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Нормконтролер</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        textarea { width: 100%; height: 150px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; resize: vertical; }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        .result { margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 4px; border-left: 4px solid #007bff; }
+        .error { border-left-color: #dc3545; background: #fff5f5; }
+        .success { border-left-color: #28a745; background: #f0fff4; }
+        .loading { opacity: 0.6; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 AI Нормконтролер</h1>
+        <p>Введите текст для проверки на соответствие ГОСТ 2.105-95:</p>
+        <textarea id="textInput" placeholder="Вставьте фрагмент документа здесь..."></textarea>
+        <br>
+        <button onclick="analyzeText()" id="analyzeBtn">Проверить</button>
+
+        <div id="result" class="result" style="display:none;"></div>
+    </div>
+
+    <script>
+        async function analyzeText() {
+            const text = document.getElementById('textInput').value;
+            const btn = document.getElementById('analyzeBtn');
+            const resultDiv = document.getElementById('result');
+
+            if (!text.trim()) {
+                alert('Введите текст для анализа');
+                return;
+            }
+
+            btn.classList.add('loading');
+            btn.disabled = true;
+            resultDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('http://localhost:8000/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text, chunk_type: 'text' })
+                });
+
+                if (!response.ok) throw new Error('Ошибка сервера');
+
+                const data = await response.json();
+                displayResult(data[0]);
+
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `<strong>Ошибка:</strong> ${error.message}`;
+                resultDiv.style.display = 'block';
+            } finally {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+            }
+        }
+
+        function displayResult(result) {
+            const resultDiv = document.getElementById('result');
+            const hasViolation = result.has_violation;
+
+            resultDiv.className = `result ${hasViolation ? 'error' : 'success'}`;
+
+            let html = `<strong>Результат:</strong> ${hasViolation ? '❌ Найдены нарушения' : '✅ Нарушений нет'}<br>`;
+            html += `<strong>Уверенность:</strong> ${(result.confidence * 100).toFixed(1)}%<br>`;
+
+            if (result.violations && result.violations.length > 0) {
+                html += '<hr><strong>Нарушения:</strong><ul>';
+                result.violations.forEach(v => {
+                    html += `<li>${v.description} (ГОСТ ${v.rule_id})</li>`;
+                });
+                html += '</ul>';
+            }
+
+            if (result.explanation) {
+                html += `<hr><em>${result.explanation}</em>`;
+            }
+
+            resultDiv.innerHTML = html;
+            resultDiv.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

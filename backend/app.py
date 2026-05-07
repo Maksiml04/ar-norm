@@ -4,7 +4,7 @@ FastAPI backend для AI-нормконтролера v2.
 Все чанки получают правильные metadata → LLM работает корректно.
 """
 from __future__ import annotations
-
+import httpx
 import os
 import sys
 import tempfile
@@ -16,6 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+import os
+import shutil
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 # Корень проекта в PYTHONPATH
 current_dir = Path(__file__).resolve().parent.parent
 if str(current_dir) not in sys.path:
@@ -74,189 +78,14 @@ class HealthCheck(BaseModel):
     message: str
     rules_loaded: int = 0
 
+class ChatMessage(BaseModel):
+    message: str
+    history: list = []
+
 
 # ─── HTML-интерфейс ───────────────────────────────────────────────────────────
 
-HTML_CONTENT = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Нормконтролер</title>
-    <style>
-        body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f4f6f9; color: #333; }
-        .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        h1 { color: #2c3e50; text-align: center; }
-        .subtitle { text-align: center; color: #7f8c8d; margin-bottom: 30px; }
-        .tabs { display: flex; justify-content: center; margin-bottom: 20px; border-bottom: 2px solid #eee; }
-        .tab { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 16px; color: #7f8c8d; }
-        .tab.active { color: #3498db; border-bottom: 3px solid #3498db; font-weight: bold; }
-        .panel { display: none; }
-        .panel.active { display: block; }
-        textarea { width: 100%; height: 200px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; resize: vertical; font-size: 14px; box-sizing: border-box; }
-        .file-upload { border: 2px dashed #ddd; padding: 30px; text-align: center; border-radius: 8px; cursor: pointer; }
-        .file-upload:hover { border-color: #3498db; background: #f0f8ff; }
-        input[type="file"] { display: none; }
-        button { background: #3498db; color: white; border: none; padding: 12px 25px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 15px; width: 100%; font-weight: 600; }
-        button:hover { background: #2980b9; }
-        button:disabled { background: #bdc3c7; cursor: not-allowed; }
-        .result { margin-top: 25px; padding: 20px; background: #f8f9fa; border-radius: 8px; border-left: 5px solid #bdc3c7; }
-        .result.error   { border-left-color: #e74c3c; background: #fdedec; }
-        .result.success { border-left-color: #2ecc71; background: #eafaf1; }
-        .violation-item { background: white; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #eee; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; }
-        .badge-critical { background: #c0392b; }
-        .badge-major    { background: #e74c3c; }
-        .badge-minor    { background: #f39c12; }
-        .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s linear infinite; vertical-align: middle; margin-right: 8px; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1>🔍 AI Нормконтролер</h1>
-    <p class="subtitle">Автоматическая проверка документации по ГОСТ 2.105-95</p>
 
-    <div class="tabs">
-        <button class="tab active" onclick="switchTab('text', event)">Текст</button>
-        <button class="tab"        onclick="switchTab('file', event)">Файл (PDF)</button>
-    </div>
-
-    <div id="panel-text" class="panel active">
-        <textarea id="textInput" placeholder="Вставьте фрагмент текста для проверки..."></textarea>
-        <button onclick="analyzeText()" id="btnText">Проверить текст</button>
-    </div>
-
-    <div id="panel-file" class="panel">
-        <label class="file-upload">
-            <input type="file" id="fileInput" accept=".pdf" onchange="updateFileName()">
-            <span id="fileName">Нажмите, чтобы выбрать PDF файл</span>
-        </label>
-        <button onclick="uploadFile()" id="btnFile">Загрузить и анализировать</button>
-    </div>
-
-    <div id="result" class="result" style="display:none;"></div>
-</div>
-
-<script>
-const API = '';
-
-function switchTab(tab, e) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    e.target.classList.add('active');
-    document.getElementById('panel-' + tab).classList.add('active');
-    document.getElementById('result').style.display = 'none';
-}
-
-function updateFileName() {
-    const f = document.getElementById('fileInput').files[0];
-    if (f) {
-        const span = document.getElementById('fileName');
-        span.textContent = 'Выбран: ' + f.name;
-        span.style.color = '#27ae60';
-    }
-}
-
-function showResult(html, type) {
-    const d = document.getElementById('result');
-    d.className = 'result ' + type;
-    d.innerHTML = html;
-    d.style.display = 'block';
-    d.scrollIntoView({ behavior: 'smooth' });
-}
-
-async function analyzeText() {
-    const text = document.getElementById('textInput').value.trim();
-    const btn  = document.getElementById('btnText');
-    if (!text) return alert('Введите текст');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Анализ...';
-    try {
-        const res  = await fetch(API + '/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, chunk_type: 'text' })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
-        renderSingle(data[0]);
-    } catch(e) {
-        showResult('<strong>Ошибка:</strong> ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Проверить текст';
-    }
-}
-
-async function uploadFile() {
-    const input = document.getElementById('fileInput');
-    const btn   = document.getElementById('btnFile');
-    if (!input.files.length) return alert('Выберите файл');
-    const fd = new FormData();
-    fd.append('file', input.files[0]);
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Загрузка и анализ...';
-    try {
-        const res  = await fetch(API + '/api/upload', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
-        renderReport(data);
-        console.log('Полный отчёт:', data);
-    } catch(e) {
-        showResult('<strong>Ошибка:</strong> ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Загрузить и анализировать';
-    }
-}
-
-function severityClass(s) {
-    return s === 'critical' ? 'badge-critical' : s === 'major' ? 'badge-major' : 'badge-minor';
-}
-
-function renderSingle(r) {
-    let html = '<strong>' + (r.has_violation ? '❌ Нарушения найдены' : '✅ Нарушений нет') + '</strong><br>';
-    html += 'Уверенность: ' + ((r.confidence || 0) * 100).toFixed(1) + '%<br>';
-    (r.violations || []).forEach(v => {
-        html += '<div class="violation-item"><span class="badge ' + severityClass(v.severity) + '">' +
-                (v.rule_id || '?') + '</span> ' + v.violation_type + '<br><small>' + v.explanation + '</small></div>';
-    });
-    showResult(html, r.has_violation ? 'error' : 'success');
-}
-
-function renderReport(data) {
-    let html = '<strong>Файл:</strong> ' + data.filename + '<br>';
-    html += 'Страниц: ' + data.total_pages + ' | Чанков: ' + data.chunks_analyzed + '<br>';
-    html += '<strong>Нарушений:</strong> ' + data.violations_found + ' | ';
-    html += '<strong>Статус:</strong> <span style="color:' + (data.status==='PASS'?'green':'red') + '">' + data.status + '</span><hr>';
-
-    let shown = 0;
-    (data.details || []).forEach(chunk => {
-        if (!chunk.has_violation || shown >= 5) return;
-        shown++;
-        html += '<div class="violation-item"><strong>Стр. ' + (chunk.location?.page || '?') +
-                ' [' + (chunk.chunk_type || 'text') + ']:</strong><br>';
-        html += '<small>' + (chunk.text || '').substring(0, 120) + '…</small>';
-        (chunk.violations || []).forEach(v => {
-            html += '<div style="margin-top:6px"><span class="badge ' + severityClass(v.severity) + '">' +
-                    (v.rule_id || '?') + '</span> ' + v.violation_type + '<br><small>' + v.explanation + '</small></div>';
-        });
-        html += '</div>';
-    });
-
-    if (data.violations_found > 5)
-        html += '<p>...и ещё ' + (data.violations_found - 5) + ' нарушений (см. консоль)</p>';
-    if (data.violations_found === 0)
-        html += '<p>Нарушений не найдено!</p>';
-
-    showResult(html, data.status === 'PASS' ? 'success' : 'error');
-}
-</script>
-</body>
-</html>
-"""
 
 
 # ─── Startup ──────────────────────────────────────────────────────────────────
@@ -294,13 +123,13 @@ async def startup_event() -> None:
 
 # ─── Эндпоинты ────────────────────────────────────────────────────────────────
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root() -> str:
-    """Встроенный HTML-интерфейс."""
-    html_file = Path(__file__).parent / "index.html"
-    if html_file.exists():
-        return html_file.read_text(encoding="utf-8")
-    return HTML_CONTENT
+# @app.get("/", response_class=HTMLResponse)
+# async def read_root() -> str:
+#     """Встроенный HTML-интерфейс."""
+#     html_file = Path(__file__).parent / "index.html"
+#     if html_file.exists():
+#         return html_file.read_text(encoding="utf-8")
+#     return HTML_CONTENT
 
 
 @app.get("/health", response_model=HealthCheck)
@@ -411,6 +240,69 @@ async def upload_and_analyze(file: UploadFile = File(...)) -> dict[str, Any]:
             except OSError:
                 pass
 
+
+@app.post("/api/chat")
+async def chat_with_gost(request: ChatMessage) -> dict[str, Any]:
+    """
+    Обработчик чата. Использует DeepSeek API через бэкенд,
+    чтобы не светить ключ на фронтенде.
+    """
+    import httpx
+
+    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")  # Лучше хранить в .env
+    if not deepseek_api_key:
+        # Fallback если ключа нет, можно вернуть ошибку или моковый ответ
+        return {
+            "response": "⚠️ Ошибка: Не настроен API ключ DeepSeek на сервере.",
+            "error": True
+        }
+
+    system_prompt = """Вы — эксперт по ГОСТ 2.105-95 (общие требования к текстовым документам) и ГОСТ 2.304-81 (шрифты для чертежей). Отвечайте на вопросы инженеров, ссылайтесь на конкретные пункты стандартов. Формат ответов — markdown."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        *request.history,
+        {"role": "user", "content": request.message}
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 1024
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            ai_text = data["choices"][0]["message"]["content"]
+            return {"response": ai_text, "error": False}
+    except Exception as e:
+        logger.error(f"Ошибка DeepSeek API: {e}")
+        return {"response": f"Ошибка соединения с AI: {str(e)}", "error": True}
+
+
+# Создание папки static если нет
+# STATIC_DIR = Path(__file__).parent / "static"
+# STATIC_DIR.mkdir(exist_ok=True)
+#
+# # Монтирование статики
+# app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets"), html=True), name="assets")
+#
+# @app.get("/{full_path:path}")
+# async def serve_react(full_path: str):
+#     """Отдаёт index.html для всех путей, чтобы работал React Router (если будет)"""
+#     index_file = STATIC_DIR / "index.html"
+#     if index_file.exists():
+#         return FileResponse(str(index_file))
+#     return HTMLResponse(content="Frontend not built yet. Run 'npm run build' in frontend folder.", status_code=503)
 
 if __name__ == "__main__":
     import uvicorn

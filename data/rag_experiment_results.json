@@ -1,0 +1,103 @@
+{
+  "timestamp": "2026-05-03T22:34:09.162953",
+  "best_config": {
+    "name": "top_k=3",
+    "top_k": 3,
+    "prompt_style": "strict"
+  },
+  "best_metrics": {
+    "tp": 3,
+    "fp": 1,
+    "fn": 0,
+    "precision": 0.75,
+    "recall": 1.0,
+    "f1": 0.857
+  },
+  "all_experiments": [
+    {
+      "experiment": "top_k=3",
+      "config": {
+        "name": "top_k=3",
+        "top_k": 3,
+        "prompt_style": "strict"
+      },
+      "metrics": {
+        "tp": 3,
+        "fp": 1,
+        "fn": 0,
+        "precision": 0.75,
+        "recall": 1.0,
+        "f1": 0.857
+      },
+      "avg_latency_sec": 12.04
+    },
+    {
+      "experiment": "top_k=5",
+      "config": {
+        "name": "top_k=5",
+        "top_k": 5,
+        "prompt_style": "strict"
+      },
+      "metrics": {
+        "tp": 3,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.6,
+        "recall": 1.0,
+        "f1": 0.75
+      },
+      "avg_latency_sec": 7.08
+    },
+    {
+      "experiment": "top_k=10",
+      "config": {
+        "name": "top_k=10",
+        "top_k": 10,
+        "prompt_style": "strict"
+      },
+      "metrics": {
+        "tp": 3,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.6,
+        "recall": 1.0,
+        "f1": 0.75
+      },
+      "avg_latency_sec": 7.51
+    },
+    {
+      "experiment": "prompt_detailed",
+      "config": {
+        "name": "prompt_detailed",
+        "top_k": 5,
+        "prompt_style": "detailed"
+      },
+      "metrics": {
+        "tp": 3,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.6,
+        "recall": 1.0,
+        "f1": 0.75
+      },
+      "avg_latency_sec": 6.87
+    },
+    {
+      "experiment": "prompt_minimal",
+      "config": {
+        "name": "prompt_minimal",
+        "top_k": 5,
+        "prompt_style": "minimal"
+      },
+      "metrics": {
+        "tp": 3,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.6,
+        "recall": 1.0,
+        "f1": 0.75
+      },
+      "avg_latency_sec": 6.39
+    }
+  ]
+}
