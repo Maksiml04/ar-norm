@@ -105,20 +105,15 @@ async def startup_event() -> None:
     else:
         logger.info(f"API ключ: {api_key[:5]}…")
 
-    if index_path.exists() and meta_path.exists():
-        try:
-            normkontroler = AINormkontroler.load_from_index(
-                index_path=str(index_path),
-                meta_path=str(meta_path),
-                api_key=api_key,
-            )
-            logger.info(f"✅ Система готова. Правил: {len(normkontroler.rules)}")
-        except Exception as e:
-            logger.error(f"Ошибка инициализации: {e}", exc_info=True)
-            raise
-    else:
-        logger.warning("Индекс не найден. Запуск в деградированном режиме.")
-        normkontroler = None
+    # Используем детерминированный режим (без FAISS)
+    try:
+        normkontroler = AINormkontroler.create_deterministic(
+            api_key=api_key,
+        )
+        logger.info(f"✅ Система готова. Правил: {len(normkontroler.rules)}")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации: {e}", exc_info=True)
+        raise
 
 
 # ─── Эндпоинты ────────────────────────────────────────────────────────────────

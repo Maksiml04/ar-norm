@@ -1,5 +1,4 @@
 """
-
 Основной модуль системы AI Нормконтролер v3.0.
 
 Поддерживает два режима работы:
@@ -31,8 +30,6 @@ from src.llm_analyzer import LLMAnalyzer
 
 from src.retriever import GOSTRetriever
 
-from src.llm_segmented_parser import DeterministicRetriever
-
 
 logger = get_logger(__name__)
 
@@ -40,7 +37,6 @@ logger = get_logger(__name__)
 
 
 class AINormkontroler:
-
     """Основной класс системы нормоконтроля."""
 
 
@@ -179,9 +175,9 @@ class AINormkontroler:
 
         logger.info("Создание DeterministicRetriever...")
 
-        retriever = DeterministicRetriever()
+        retriever = GOSTRetriever.load()
 
-        rules = retriever.rules
+        rules = list(retriever.rules_db.values())
 
 
         # LLM анализатор (опционально)
@@ -473,3 +469,4 @@ class AINormkontroler:
 
 
         return results
+
