@@ -1,0 +1,84 @@
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:102 | get_logger | ================================================================================
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:104 | get_logger | ================================================================================
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:105 | get_logger | Окружение: Local
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:109 | get_logger | PID процесса: 251
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:742 | __init__ | DeterministicRetriever инициализирован. Правил: 28
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:771 | search | search [section_header] → 3 правил
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:771 | search | search [table_block] → 5 правил
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:771 | search | search [text] → 5 правил
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:771 | search | search [title_page] → 2 правил
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:771 | search | search [toc] → 2 правил
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:441 | __init__ | LLMSegmentedParser инициализирован
+2026-05-14 15:30:46 | [92mINFO[0m | src.llm_segmented_parser:497 | parse_pdf | Обработка PDF: МФАС.563563.003 ПМ.pdf
+2026-05-14 15:30:47 | [92mINFO[0m | src.llm_segmented_parser:503 | parse_pdf | Страниц: 56
+2026-05-14 15:31:11 | [92mINFO[0m | src.llm_segmented_parser:546 | parse_pdf | Готово. Чанков: 56. Распределение: {'text_body': 56}
+2026-05-14 15:31:11 | [92mINFO[0m | src.llm_segmented_parser:717 | save_chunks | Чанки сохранены в /workspace/output_llm_segmented.json
+2026-05-14 15:31:11 | [92mINFO[0m | src.llm_segmented_parser:441 | __init__ | LLMSegmentedParser инициализирован
+2026-05-14 15:31:11 | [92mINFO[0m | src.llm_segmented_parser:575 | parse_docx | Обработка DOCX: test_document.docx
+2026-05-14 15:31:11 | [92mINFO[0m | src.llm_segmented_parser:658 | parse_docx | Готово. Чанков: 1. Распределение: {'text_body': 1}
+2026-05-14 15:31:11 | [92mINFO[0m | src.llm_segmented_parser:717 | save_chunks | Чанки сохранены в /workspace/output_docx_llm_segmented.json
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:102 | get_logger | ================================================================================
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:104 | get_logger | ================================================================================
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:105 | get_logger | Окружение: Local
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:109 | get_logger | PID процесса: 329
+2026-05-14 15:33:13 | [92mINFO[0m | src.llm_analyzer:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:102 | get_logger | ================================================================================
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:104 | get_logger | ================================================================================
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:105 | get_logger | Окружение: Local
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:109 | get_logger | PID процесса: 367
+2026-05-14 15:33:34 | [92mINFO[0m | src.llm_analyzer:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:102 | get_logger | ================================================================================
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:104 | get_logger | ================================================================================
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:105 | get_logger | Окружение: Local
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:109 | get_logger | PID процесса: 420
+2026-05-14 15:34:01 | [92mINFO[0m | src.llm_analyzer:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:102 | get_logger | ================================================================================
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:104 | get_logger | ================================================================================
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:105 | get_logger | Окружение: Local
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:109 | get_logger | PID процесса: 420
+2026-05-14 15:34:25 | [92mINFO[0m | src.retriever:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:102 | get_logger | ================================================================================
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:104 | get_logger | ================================================================================
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:105 | get_logger | Окружение: Local
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:109 | get_logger | PID процесса: 420
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:102 | get_logger | ================================================================================
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:103 | get_logger | AI НОРМКОНТРОЛЕР - ЗАПУСК СИСТЕМЫ ЛОГИРОВАНИЯ
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:104 | get_logger | ================================================================================
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:105 | get_logger | Окружение: Local
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:106 | get_logger | Уровень логирования: INFO
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:107 | get_logger | Логирование в файл: Включено
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:108 | get_logger | Директория логов: /workspace/logs
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:109 | get_logger | PID процесса: 420
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:110 | get_logger | --------------------------------------------------------------------------------
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:180 | create_deterministic | Создание DeterministicRetriever...
+2026-05-14 15:34:25 | [92mINFO[0m | src.llm_segmented_parser:742 | __init__ | DeterministicRetriever инициализирован. Правил: 28
+2026-05-14 15:34:25 | [93mWARNING[0m | src.main:205 | create_deterministic | API ключ не предоставлен. LLM анализатор отключён.
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:71 | __init__ | AINormkontroler инициализирован. Правил: 28
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:75 | __init__ | Режим: Детерминированный поиск правил (по типу блока)
+2026-05-14 15:34:25 | [92mINFO[0m | src.main:81 | __init__ | LLM анализатор: ❌ не подключён

@@ -1,20 +1,19 @@
 """
 
-Основной модуль системы AI Нормконтролер v2.
+Основной модуль системы AI Нормконтролер v3.0.
 
-Теперь search_rules работает через GOSTRetriever, а не заглушку.
+Поддерживает два режима работы:
+1. Классический режим (GOSTRetriever + FAISS) - если доступен индекс
+2. Новый режим (DeterministicRetriever) - детерминированный поиск по типу блока
 
 """
 
 from __future__ import annotations
 
 
-
 import os
 
 from typing import Any, Optional
-
-
 
 try:
 
@@ -32,10 +31,10 @@ from src.llm_analyzer import LLMAnalyzer
 
 from src.retriever import GOSTRetriever
 
+from src.llm_segmented_parser import DeterministicRetriever
 
 
 logger = get_logger(__name__)
-
 
 
 
@@ -52,9 +51,11 @@ class AINormkontroler:
 
         rules: list[dict[str, Any]],
 
-        retriever: Optional[GOSTRetriever] = None,
+        retriever: Optional[Any] = None,  # GOSTRetriever или DeterministicRetriever
 
         analyzer: Optional[LLMAnalyzer] = None,
+
+        use_deterministic: bool = False,
 
     ) -> None:
 
@@ -64,11 +65,18 @@ class AINormkontroler:
 
         self.analyzer = analyzer
 
+        self.use_deterministic = use_deterministic
 
 
         logger.info(f"AINormkontroler инициализирован. Правил: {len(rules)}")
 
-        logger.info(f"Retriever: {'✅' if retriever else '❌ не подключён'}")
+        if use_deterministic:
+
+            logger.info("Режим: Детерминированный поиск правил (по типу блока)")
+
+        else:
+
+            logger.info(f"Retriever: {'✅' if retriever else '❌ не подключён'}")
 
         logger.info(f"LLM анализатор: {'✅' if analyzer else '❌ не подключён'}")
 
@@ -96,8 +104,7 @@ class AINormkontroler:
 
         """
 
-        Загружает систему из файлов индекса.
-
+        Загружает систему из файлов индекса (классический режим с FAISS).
 
 
         Args:
@@ -117,15 +124,13 @@ class AINormkontroler:
             raise ImportError("Установите faiss-cpu: pip install faiss-cpu")
 
 
-
         # 1. GOSTRetriever загружает индекс, правила и модель в одном месте
 
-        logger.info("Загрузка GOSTRetriever...")
+        logger.info("Загрузка GOSTRetriever (FAISS)...")
 
         retriever = GOSTRetriever.load(index_path, meta_path, device=device)
 
         rules = retriever.rules
-
 
 
         # 2. LLM анализатор (опционально)
@@ -149,8 +154,58 @@ class AINormkontroler:
             logger.warning("API ключ не предоставлен. LLM анализатор отключён.")
 
 
+        return cls(rules=rules, retriever=retriever, analyzer=analyzer, use_deterministic=False)
+    
+    @classmethod
 
-        return cls(rules=rules, retriever=retriever, analyzer=analyzer)
+    def create_deterministic(
+
+        cls,
+
+        api_key: Optional[str] = None,
+
+    ) -> "AINormkontroler":
+
+        """
+
+        Создаёт нормконтролер в режиме детерминированного поиска (без FAISS).
+
+
+        Args:
+
+            api_key: ключ для LLM (OpenRouter / OpenAI)
+
+        """
+
+        logger.info("Создание DeterministicRetriever...")
+
+        retriever = DeterministicRetriever()
+
+        rules = retriever.rules
+
+
+        # LLM анализатор (опционально)
+
+        analyzer: Optional[LLMAnalyzer] = None
+
+        if api_key:
+
+            try:
+
+                analyzer = LLMAnalyzer(api_key=api_key)
+
+                logger.info("✅ LLM анализатор инициализирован.")
+
+            except Exception as e:
+
+                logger.error(f"Не удалось создать LLMAnalyzer: {e}")
+
+        else:
+
+            logger.warning("API ключ не предоставлен. LLM анализатор отключён.")
+
+
+        return cls(rules=rules, retriever=retriever, analyzer=analyzer, use_deterministic=True)
 
 
 
@@ -179,7 +234,6 @@ class AINormkontroler:
             return self.rules[:top_k]
 
 
-
         return self.retriever.search(
 
             chunk_text=chunk_text,
@@ -205,7 +259,6 @@ class AINormkontroler:
         Анализирует чанк документа на нарушения ГОСТ.
 
 
-
         Args:
 
             chunk: словарь с ключами 'id', 'text', 'chunk_type', 'location',
@@ -225,7 +278,6 @@ class AINormkontroler:
         chunk_type = chunk.get("chunk_type", "text")
 
         context_query = chunk.get("context_query", "")
-
 
 
         # ── 1. Семантический поиск релевантных правил ────────────────────────
@@ -251,7 +303,6 @@ class AINormkontroler:
         )
 
 
-
         # ── 2. LLM анализ ────────────────────────────────────────────────────
 
         if not self.analyzer:
@@ -259,8 +310,11 @@ class AINormkontroler:
             return {
 
                 "chunk_id": chunk_id,
-                "text": chunk_text,  # ← ДОБАВЛЯЕМ
+
+                "text": chunk_text,
+
                 "has_violation": False,
+
                 "violations": [],
 
                 "is_correct": True,
@@ -274,10 +328,7 @@ class AINormkontroler:
             }
 
 
-
         try:
-
-            # ← ИСПРАВЛЕНО: передаём полный словарь chunk, а не строку chunk_text
 
             result = self.analyzer.analyze_chunk(
 
@@ -288,12 +339,14 @@ class AINormkontroler:
             )
 
             result["chunk_id"] = chunk_id
+
             result["location"] = chunk.get("location", {})
-            result["text"] = chunk_text  # ← ДОБАВЛЯЕМ текст чанка в ответ
+
+            result["text"] = chunk_text
+
             result["applied_rules"] = [r.get("id") for r in relevant_rules]
 
             return result
-
 
 
         except Exception as e:
@@ -337,7 +390,6 @@ class AINormkontroler:
             return []
 
 
-
         # Батч-поиск правил для всех чанков за один encode-вызов
 
         if self.retriever:
@@ -349,13 +401,11 @@ class AINormkontroler:
             all_rules = [self.rules[:5]] * len(chunks)
 
 
-
         results = []
 
         for chunk, relevant_rules in zip(chunks, all_rules):
 
             chunk_id = chunk.get("id", "unknown")
-
 
 
             if not self.analyzer:
@@ -381,10 +431,7 @@ class AINormkontroler:
                 continue
 
 
-
             try:
-
-                # ← ИСПРАВЛЕНО: передаём полный словарь chunk
 
                 result = self.analyzer.analyze_chunk(
 
@@ -423,7 +470,6 @@ class AINormkontroler:
                     "error": str(e),
 
                 })
-
 
 
         return results
