@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Search, FileText, MessageSquare, History, Settings, Sun, Moon,
-  Upload, Send, AlertTriangle, AlertCircle, CheckCircle, X, Trash2, ChevronRight
+  Upload, Send, AlertTriangle, AlertCircle, CheckCircle, X, Trash2, ChevronRight, Sparkles, Zap, Shield
 } from 'lucide-react';
 
 // ============================================================
@@ -284,18 +284,21 @@ function AnalysisTab({ dark }) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between mb-5">
-        <h2 className={`text-2xl font-bold ${dark ? 'text-zinc-100' : 'text-slate-800'}`}>
-          Анализ документа
-        </h2>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className={`text-3xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent`}>
+            Анализ документа
+          </h2>
+          <p className={`text-xs mt-1 ${dark ? 'text-zinc-500' : 'text-slate-400'}`}>AI-проверка на соответствие ГОСТ</p>
+        </div>
         {pdfFile && (
           <button
             onClick={resetUpload}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
-              dark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+            className={`flex items-center gap-2 px-4 py-2 text-sm rounded-xl transition-all ${
+              dark ? 'text-zinc-400 hover:text-red-400 hover:bg-red-500/10' : 'text-slate-500 hover:text-red-500 hover:bg-red-50'
             }`}
           >
-            <X size={14} />
+            <X size={16} />
             Сбросить
           </button>
         )}
@@ -305,10 +308,10 @@ function AnalysisTab({ dark }) {
         <div
           onDrop={handleDrop}
           onDragOver={handleDragOver}
-          className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-2xl transition-all cursor-pointer ${
+          className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-3xl transition-all cursor-pointer group ${
             dark
-              ? 'border-zinc-700 bg-zinc-900/50 hover:border-blue-500 hover:bg-zinc-900'
-              : 'border-slate-300 bg-slate-50 hover:border-blue-400 hover:bg-blue-50/50'
+              ? 'border-zinc-700 bg-zinc-900/30 hover:border-blue-500/50 hover:bg-blue-500/5'
+              : 'border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50/30'
           }`}
           onClick={() => document.getElementById('pdfFileInput')?.click()}
         >
@@ -319,17 +322,25 @@ function AnalysisTab({ dark }) {
             onChange={handleFileChange}
             className="hidden"
           />
-          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 ${
-            dark ? 'bg-zinc-800' : 'bg-slate-100'
-          }`}>
-            <Upload size={28} className={dark ? 'text-zinc-500' : 'text-slate-400'} />
+          {/* Анимированная иконка */}
+          <div className="relative mb-6">
+            <div className="absolute inset-0 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-3xl blur-xl opacity-20 group-hover:opacity-40 transition-opacity animate-pulse-slow" />
+            <div className={`relative w-20 h-20 rounded-3xl flex items-center justify-center ${
+              dark ? 'bg-zinc-800 group-hover:bg-zinc-700' : 'bg-slate-100 group-hover:bg-white'
+            } transition-colors shadow-xl`}>
+              <Upload size={32} className={`${dark ? 'text-zinc-500 group-hover:text-blue-400' : 'text-slate-400 group-hover:text-blue-500'} transition-colors`} />
+            </div>
           </div>
-          <p className={`text-lg font-semibold ${dark ? 'text-zinc-300' : 'text-slate-600'}`}>
+          <p className={`text-xl font-bold ${dark ? 'text-zinc-200' : 'text-slate-700'}`}>
             Загрузите PDF-документ
           </p>
-          <p className={`text-sm mt-2 ${dark ? 'text-zinc-600' : 'text-slate-400'}`}>
+          <p className={`text-sm mt-2 ${dark ? 'text-zinc-500' : 'text-slate-400'}`}>
             Перетащите файл или нажмите для выбора
           </p>
+          <div className={`mt-6 flex items-center gap-2 px-4 py-2 rounded-full text-xs ${dark ? 'bg-zinc-800 text-zinc-400' : 'bg-slate-100 text-slate-500'}`}>
+            <Sparkles size={12} className="text-purple-400" />
+            <span>AI анализирует за секунды</span>
+          </div>
         </div>
       ) : (
         <div className="flex flex-1 gap-5 min-h-0">
@@ -661,14 +672,23 @@ export default function App() {
 
   return (
     <div className={`h-screen flex ${dark ? 'dark' : ''}`}>
-      <aside className={`w-[72px] flex flex-col items-center py-5 shrink-0 border-r ${dark ? 'bg-zinc-950 border-zinc-800' : 'bg-slate-50 border-slate-200'}`}>
-        <div className="mb-6">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white font-bold text-[10px] leading-tight shadow-lg shadow-blue-500/20">
+      {/* Sidebar с градиентным фоном */}
+      <aside className={`w-[84px] flex flex-col items-center py-6 shrink-0 relative overflow-hidden ${dark ? 'bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950 border-r border-zinc-800/50' : 'bg-gradient-to-b from-slate-50 via-white to-slate-50 border-r border-slate-200/50'}`}>
+        {/* Анимированный фоновый элемент */}
+        <div className={`absolute inset-0 opacity-30 ${dark ? 'bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-900/20 via-transparent to-transparent' : 'bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-100/40 via-transparent to-transparent'}`} />
+        
+        {/* Логотип с эффектом свечения */}
+        <div className="mb-8 relative group">
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-2xl blur-lg opacity-50 group-hover:opacity-70 transition-opacity animate-glow" />
+          <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-xs shadow-2xl">
             ГОСТ
           </div>
         </div>
-        <div className={`w-8 h-px mb-4 ${dark ? 'bg-zinc-800' : 'bg-slate-200'}`} />
-        <nav className="flex flex-col gap-1.5 w-full px-2.5">
+        
+        <div className={`w-10 h-px mb-6 ${dark ? 'bg-gradient-to-r from-transparent via-zinc-700 to-transparent' : 'bg-gradient-to-r from-transparent via-slate-300 to-transparent'}`} />
+        
+        {/* Навигация */}
+        <nav className="flex flex-col gap-2 w-full px-3 relative z-10">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -677,29 +697,41 @@ export default function App() {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 title={tab.label}
-                className={`flex flex-col items-center justify-center py-2.5 rounded-xl transition-all group ${
+                className={`group relative flex flex-col items-center justify-center py-3 px-2 rounded-2xl transition-all duration-300 ${
                   isActive
-                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/25'
-                    : dark ? 'text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800/80' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                    ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-xl shadow-blue-500/30 scale-105'
+                    : dark ? 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
                 }`}
               >
-                <Icon size={20} strokeWidth={isActive ? 2.5 : 1.5} />
-                <span className="text-[9px] mt-1 font-semibold">{tab.label}</span>
+                {isActive && (
+                  <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent rounded-2xl" />
+                )}
+                <Icon size={22} strokeWidth={isActive ? 2.5 : 1.5} className="relative z-10" />
+                <span className="text-[9px] mt-1.5 font-semibold tracking-wide relative z-10">{tab.label}</span>
               </button>
             );
           })}
         </nav>
+        
         <div className="flex-1" />
+        
+        {/* Переключатель темы */}
         <button
           onClick={() => setDark(!dark)}
-          className={`flex flex-col items-center justify-center py-2.5 rounded-xl transition-all w-full px-2.5 mb-1 ${dark ? 'text-zinc-600 hover:text-amber-400 hover:bg-zinc-800/80' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'}`}
+          className={`group relative flex flex-col items-center justify-center py-3 px-2 rounded-2xl transition-all duration-300 w-full mb-2 ${dark ? 'text-zinc-500 hover:text-amber-400 hover:bg-amber-500/10' : 'text-slate-400 hover:text-amber-500 hover:bg-amber-50'}`}
         >
-          {dark ? <Sun size={20} strokeWidth={1.5} /> : <Moon size={20} strokeWidth={1.5} />}
-          <span className="text-[9px] mt-1 font-semibold">{dark ? 'Свет' : 'Тёмн.'}</span>
+          <div className={`absolute inset-0 rounded-2xl transition-opacity ${dark ? 'group-hover:bg-amber-500/5' : 'group-hover:bg-amber-100/50'}`} />
+          {dark ? <Sun size={22} strokeWidth={1.5} /> : <Moon size={22} strokeWidth={1.5} />}
+          <span className="text-[9px] mt-1.5 font-semibold">{dark ? 'Свет' : 'Тёмн.'}</span>
         </button>
       </aside>
 
-      <main className={`flex-1 p-6 overflow-auto ${dark ? 'bg-zinc-950' : 'bg-slate-100'}`}>
+      {/* Main content area */}
+      <main className={`flex-1 p-8 overflow-auto relative ${dark ? 'bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950' : 'bg-gradient-to-br from-slate-50 via-slate-100 to-slate-50'}`}>
+        {/* Фоновые декоративные элементы */}
+        <div className="fixed top-0 right-0 w-96 h-96 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
+        <div className="fixed bottom-0 left-0 w-96 h-96 bg-purple-500/5 rounded-full blur-3xl pointer-events-none" />
+        
         {activeTab === 'analysis' && <AnalysisTab dark={dark} />}
         {activeTab === 'chat' && <ChatTab dark={dark} />}
         {activeTab === 'history' && <HistoryTab dark={dark} />}
