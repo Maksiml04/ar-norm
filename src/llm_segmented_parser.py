@@ -759,7 +759,38 @@ class DeterministicRetriever:
         Returns:
             Список релевантных правил
         """
-        type_key = chunk_type.upper()
+        # Нормализация типа блока: приводим к верхнему регистру и мапим известные варианты
+        type_key = chunk_type.upper().strip()
+        
+        # Маппинг возможных вариантов написания
+        type_mapping = {
+            "TEXT": "TEXT_BODY",
+            "TEXTBODY": "TEXT_BODY",
+            "TEXT-BODY": "TEXT_BODY",
+            "PARAGRAPH": "TEXT_BODY",
+            "FIGURE": "FIGURE_REF",
+            "FIG": "FIGURE_REF",
+            "IMAGE": "FIGURE_REF",
+            "RIS": "FIGURE_REF",
+            "RISUNOK": "FIGURE_REF",
+            "ФОРМУЛА": "FORMULA",
+            "EQUATION": "FORMULA",
+            "MATH": "FORMULA",
+            "СПИСОК": "LIST",
+            "ENUM": "LIST",
+            "ITEMIZE": "LIST",
+            "ТАБЛИЦА": "TABLE_BLOCK",
+            "TABL": "TABLE_BLOCK",
+            "TABLE": "TABLE_BLOCK",
+        }
+        
+        type_key = type_mapping.get(type_key, type_key)
+        
+        # Проверка: если тип блока не найден в реестре, используем TEXT_BODY
+        if type_key not in BLOCK_RULE_REGISTRY:
+            logger.warning(f"Нет правил для типа блока '{chunk_type}', используем TEXT_BODY")
+            type_key = "TEXT_BODY"
+        
         rule_ids = BLOCK_RULE_REGISTRY.get(type_key, BLOCK_RULE_REGISTRY["TEXT_BODY"])
         rules = [RULES_DB[rid] for rid in rule_ids if rid in RULES_DB]
         
@@ -767,7 +798,7 @@ class DeterministicRetriever:
         for i, rule in enumerate(rules[:top_k]):
             rule["_score"] = 1.0 - (i * 0.1)  # Убывающий скор
         
-        logger.info(f"search [{chunk_type}] → {len(rules[:top_k])} правил")
+        logger.info(f"search [{chunk_type}] → {len(rules[:top_k])} правил. IDs: {[r['id'] for r in rules[:top_k]]}")
         return rules[:top_k]
     
     def search_batch(

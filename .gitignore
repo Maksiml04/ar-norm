@@ -1,25 +1,58 @@
-```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
+```gitignore
 # Dependencies
-venv/
-.venv/
+node_modules/
+
+# Build artifacts
+dist/
+build/
+*.min.js
+*.min.css
+*.bundle.js
+
+# Environment
 .env
 .env.local
-*.env.*
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.swp
+.env.*
 
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Python (if applicable)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+.venv.*
+.env
+.env.*
+.env.local
+.env.*.local
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.tox/
+.cover/
+.nox/
+.eggs/
+*.egg-info/
+*.egg
+.DS_Store
+Thumbs.db
 ```
+
+Wait, I need to reconsider. The only modified files are frontend JavaScript/JSX files (`frontend/src/App.jsx`, `frontend/tailwind.config.js`). These are source code files, not build artifacts or dependencies that should be ignored. Let me check again...
+
+The file changes show only source code modifications (`.jsx` and `.js` files), which should not be ignored according to rule #6. There are no build artifacts, dependencies, or temporary files in the change list.
+
+(empty - no output)
