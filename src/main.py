@@ -1,472 +1,133 @@
-"""
-Основной модуль системы AI Нормконтролер v3.0.
-
-Поддерживает два режима работы:
-1. Классический режим (GOSTRetriever + FAISS) - если доступен индекс
-2. Новый режим (DeterministicRetriever) - детерминированный поиск по типу блока
-
-"""
-
 from __future__ import annotations
-
-
 import os
-
+import tempfile
+import logging
 from typing import Any, Optional
+from contextlib import asynccontextmanager
 
-try:
+from fastapi import FastAPI, File, HTTPException, UploadFile, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-    import faiss
+from src.chunker import DocumentChunker
+from src.orchestrator import NormcontrolPipeline
+from src.schemas import ChunkType
 
-except ImportError:
+logger = logging.getLogger(__name__)
 
-    faiss = None
+_pipeline_instance: Optional[NormcontrolPipeline] = None
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Modern FastAPI startup/shutdown handler"""
+    global _pipeline_instance
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    base_url = "https://openrouter.ai/api/v1"
 
-from src.logging_config import get_logger
+    _pipeline_instance = NormcontrolPipeline(
+        api_key=api_key,
+        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
+        base_url=base_url
+    )
+    logger.info("✅ Pipeline инициализирован через OpenRouter.")
+    yield
+    # Очистка при выключении (если требуется)
 
-from src.llm_analyzer import LLMAnalyzer
 
-from src.retriever import GOSTRetriever
+app = FastAPI(title="AI Нормконтролер v3", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"],
+                   allow_headers=["*"])
 
 
-logger = get_logger(__name__)
+# Dependency Injection
+def get_pipeline() -> NormcontrolPipeline:
+    if not _pipeline_instance:
+        raise HTTPException(503, "Пайплайн еще не готов")
+    return _pipeline_instance
 
 
+class AnalyzeTextRequest(BaseModel):
+    text: str
+    chunk_type: str = "TEXT_BODY"
 
 
-class AINormkontroler:
-    """Основной класс системы нормоконтроля."""
+class ChatMessage(BaseModel):
+    message: str
+    history: list = []
 
 
+@app.post("/api/upload")
+async def upload_and_analyze(file: UploadFile = File(...), pipeline: NormcontrolPipeline = Depends(get_pipeline)) -> \
+dict[str, Any]:
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Принимаются только PDF файлы")
 
-    def __init__(
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
 
-        self,
-
-        rules: list[dict[str, Any]],
-
-        retriever: Optional[Any] = None,  # GOSTRetriever или DeterministicRetriever
-
-        analyzer: Optional[LLMAnalyzer] = None,
-
-        use_deterministic: bool = False,
-
-    ) -> None:
-
-        self.rules = rules
-
-        self.retriever = retriever
-
-        self.analyzer = analyzer
-
-        self.use_deterministic = use_deterministic
-
-
-        logger.info(f"AINormkontroler инициализирован. Правил: {len(rules)}")
-
-        if use_deterministic:
-
-            logger.info("Режим: Детерминированный поиск правил (по типу блока)")
-
-        else:
-
-            logger.info(f"Retriever: {'✅' if retriever else '❌ не подключён'}")
-
-        logger.info(f"LLM анализатор: {'✅' if analyzer else '❌ не подключён'}")
-
-
-
-    # ── Фабричный метод ─────────────────────────────────────────────────────
-
-
-
-    @classmethod
-
-    def load_from_index(
-
-        cls,
-
-        index_path: str,
-
-        meta_path: str,
-
-        api_key: Optional[str] = None,
-
-        device: str = "cpu",
-
-    ) -> "AINormkontroler":
-
-        """
-
-        Загружает систему из файлов индекса (классический режим с FAISS).
-
-
-        Args:
-
-            index_path: путь к gost.index
-
-            meta_path:  путь к gost_rules_meta.pkl
-
-            api_key:    ключ для LLM (OpenRouter / OpenAI)
-
-            device:     'cpu' или 'cuda'
-
-        """
-
-        if faiss is None:
-
-            raise ImportError("Установите faiss-cpu: pip install faiss-cpu")
-
-
-        # 1. GOSTRetriever загружает индекс, правила и модель в одном месте
-
-        logger.info("Загрузка GOSTRetriever (FAISS)...")
-
-        retriever = GOSTRetriever.load(index_path, meta_path, device=device)
-
-        rules = retriever.rules
-
-
-        # 2. LLM анализатор (опционально)
-
-        analyzer: Optional[LLMAnalyzer] = None
-
-        if api_key:
-
-            try:
-
-                analyzer = LLMAnalyzer(api_key=api_key)
-
-                logger.info("✅ LLM анализатор инициализирован.")
-
-            except Exception as e:
-
-                logger.error(f"Не удалось создать LLMAnalyzer: {e}")
-
-        else:
-
-            logger.warning("API ключ не предоставлен. LLM анализатор отключён.")
-
-
-        return cls(rules=rules, retriever=retriever, analyzer=analyzer, use_deterministic=False)
-    
-    @classmethod
-
-    def create_deterministic(
-
-        cls,
-
-        api_key: Optional[str] = None,
-
-    ) -> "AINormkontroler":
-
-        """
-
-        Создаёт нормконтролер в режиме детерминированного поиска (без FAISS).
-
-
-        Args:
-
-            api_key: ключ для LLM (OpenRouter / OpenAI)
-
-        """
-
-        logger.info("Создание DeterministicRetriever...")
-
-        retriever = GOSTRetriever.load()
-
-        rules = list(retriever.rules_db.values())
-
-
-        # LLM анализатор (опционально)
-
-        analyzer: Optional[LLMAnalyzer] = None
-
-        if api_key:
-
-            try:
-
-                analyzer = LLMAnalyzer(api_key=api_key)
-
-                logger.info("✅ LLM анализатор инициализирован.")
-
-            except Exception as e:
-
-                logger.error(f"Не удалось создать LLMAnalyzer: {e}")
-
-        else:
-
-            logger.warning("API ключ не предоставлен. LLM анализатор отключён.")
-
-
-        return cls(rules=rules, retriever=retriever, analyzer=analyzer, use_deterministic=True)
-
-
-
-    # ── Поиск правил ────────────────────────────────────────────────────────
-
-
-
-    def search_rules(
-
-        self,
-
-        chunk_text: str,
-
-        chunk_type: str = "text",
-
-        context_query: str = "",
-
-        top_k: int = 5,
-
-    ) -> list[dict[str, Any]]:
-
-        if self.retriever is None:
-
-            logger.warning("Retriever не загружен — возвращаю первые правила как fallback")
-
-            return self.rules[:top_k]
-
-
-        return self.retriever.search(
-
-            chunk_text=chunk_text,
-
-            chunk_type=chunk_type,
-
-            context_query=context_query,
-
-            top_k=top_k,
-
-        )
-
-
-
-    # ── Анализ чанка ────────────────────────────────────────────────────────
-
-
-
-    def analyze_chunk(self, chunk: dict[str, Any]) -> dict[str, Any]:
-
-        """
-
-        Анализирует чанк документа на нарушения ГОСТ.
-
-
-        Args:
-
-            chunk: словарь с ключами 'id', 'text', 'chunk_type', 'location',
-
-                   опционально 'context_query' (из PDFChunker).
-
-        Returns:
-
-            Словарь с полями has_violation, violations, confidence, …
-
-        """
-
-        chunk_id = chunk.get("id", "unknown")
-
-        chunk_text = chunk.get("text", "")
-
-        chunk_type = chunk.get("chunk_type", "text")
-
-        context_query = chunk.get("context_query", "")
-
-
-        # ── 1. Семантический поиск релевантных правил ────────────────────────
-
-        relevant_rules = self.search_rules(
-
-            chunk_text=chunk_text,
-
-            chunk_type=chunk_type,
-
-            context_query=context_query,
-
-            top_k=5,
-
-        )
-
-        logger.debug(
-
-            f"[{chunk_id}] Найдено {len(relevant_rules)} правил: "
-
-            f"{[r.get('gost_id') for r in relevant_rules]}"
-
-        )
-
-
-        # ── 2. LLM анализ ────────────────────────────────────────────────────
-
-        if not self.analyzer:
-
-            return {
-
-                "chunk_id": chunk_id,
-
-                "text": chunk_text,
-
-                "has_violation": False,
-
-                "violations": [],
-
-                "is_correct": True,
-
-                "confidence": 0.0,
-
-                "applied_rules": [r.get("gost_id") for r in relevant_rules],
-
-                "warning": "LLM анализатор не доступен.",
-
-            }
-
-
-        try:
-
-            result = self.analyzer.analyze_chunk(
-
-                chunk=chunk,
-
-                rules=relevant_rules,
-
-            )
-
-            result["chunk_id"] = chunk_id
-
-            result["location"] = chunk.get("location", {})
-
-            result["text"] = chunk_text
-
-            result["applied_rules"] = [r.get("id") for r in relevant_rules]
-
-            return result
-
-
-        except Exception as e:
-
-            logger.error(f"Ошибка анализа чанка {chunk_id}: {e}", exc_info=True)
-
-            return {
-
-                "chunk_id": chunk_id,
-
-                "has_violation": False,
-
-                "violations": [],
-
-                "is_correct": True,
-
-                "confidence": 0.0,
-
-                "applied_rules": [],
-
-                "error": str(e),
-
-            }
-
-
-
-    def analyze_chunks_batch(
-
-        self, chunks: list[dict[str, Any]]
-
-    ) -> list[dict[str, Any]]:
-
-        """
-
-        Анализирует список чанков, используя батч-поиск правил.
-
-        """
-
+        chunks = DocumentChunker().chunk_pdf(tmp_path)
         if not chunks:
+            raise HTTPException(400, "Скан-копия или пустой файл.")
 
-            return []
+        # ВАЖНО: Вызов через await! Мы больше не блокируем воркеры сервера.
+        results, stats = await pipeline.process_document_async(chunks)
 
+        severity_counts = {"critical": 0, "major": 0, "minor": 0}
+        details = []
 
-        # Батч-поиск правил для всех чанков за один encode-вызов
-
-        if self.retriever:
-
-            all_rules = self.retriever.search_batch(chunks, top_k=5)
-
-        else:
-
-            all_rules = [self.rules[:5]] * len(chunks)
-
-
-        results = []
-
-        for chunk, relevant_rules in zip(chunks, all_rules):
-
-            chunk_id = chunk.get("id", "unknown")
-
-
-            if not self.analyzer:
-
-                results.append({
-
-                    "chunk_id": chunk_id,
-
-                    "has_violation": False,
-
-                    "violations": [],
-
-                    "is_correct": True,
-
-                    "confidence": 0.0,
-
-                    "applied_rules": [r.get("gost_id") for r in relevant_rules],
-
-                    "warning": "LLM анализатор не доступен.",
-
+        for res in results:
+            for v in res.violations:
+                severity_counts[v.severity.value] += 1
+                details.append({
+                    "chunk_id": res.chunk_id,
+                    "rule_id": v.rule_id,
+                    "violation_type": v.violation_type,
+                    "explanation": v.explanation,
+                    "severity": v.severity.value,
+                    "validator": res.validator.value,
                 })
 
-                continue
+        overall_status = "FAIL" if severity_counts["critical"] or severity_counts["major"] else "WARN" if \
+        severity_counts["minor"] else "PASS"
+
+        return {
+            "filename": file.filename,
+            "violations_found": stats.total_violations,
+            "severity_counts": severity_counts,
+            "status": overall_status,
+            "details": details,
+        }
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
-            try:
+@app.post("/api/chat")
+async def chat(request: ChatMessage) -> dict[str, Any]:
+    import httpx
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return {"response": "⚠️ OPENROUTER_API_KEY не настроен.", "error": True}
 
-                result = self.analyzer.analyze_chunk(
+    messages = [
+        {"role": "system", "content": "Вы — эксперт по ГОСТ. Формат ответов — markdown."},
+        *request.history,
+        {"role": "user", "content": request.message},
+    ]
 
-                    chunk=chunk,
-
-                    rules=relevant_rules,
-
-                )
-
-                result["chunk_id"] = chunk_id
-
-                result["location"] = chunk.get("location", {})
-
-                result["applied_rules"] = [r.get("gost_id") for r in relevant_rules]
-
-                results.append(result)
-
-            except Exception as e:
-
-                logger.error(f"Ошибка анализа {chunk_id}: {e}", exc_info=True)
-
-                results.append({
-
-                    "chunk_id": chunk_id,
-
-                    "has_violation": False,
-
-                    "violations": [],
-
-                    "is_correct": True,
-
-                    "confidence": 0.0,
-
-                    "applied_rules": [],
-
-                    "error": str(e),
-
-                })
-
-
-        return results
-
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "HTTP-Referer": "http://localhost"},
+                json={"model": "deepseek/deepseek-chat", "messages": messages, "temperature": 0.7}
+            )
+            resp.raise_for_status()
+            return {"response": resp.json()["choices"][0]["message"]["content"], "error": False}
+    except Exception as e:
+        return {"response": f"Ошибка: {e}", "error": True}

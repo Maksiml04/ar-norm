@@ -318,7 +318,7 @@ function AnalysisTab({ dark }) {
           <input
             id="pdfFileInput"
             type="file"
-            accept=".pdf,application/pdf"
+            accept=".pdf,application/pdf,.docs"
             onChange={handleFileChange}
             className="hidden"
           />
